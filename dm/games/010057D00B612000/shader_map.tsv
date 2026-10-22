@@ -1,0 +1,8 @@
+# kind: evidence  Into The Breach shaders (GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# column 5 records where each key first appears; this game has no PC version to pair with
+package	index	stage	dm_ctl_sha16	source
+ps_shaders.bin	0	pixel	eeea35b43c2e762c	/shaders/color_movie.ps#GLSLC@0x0
+ps_shaders.bin	1	pixel	7b333184cfccc3ca	/shaders/color_tex0.ps#GLSLC@0x0
+ps_shaders.bin	2	pixel	04602ebdc702c28a	/shaders/color_tex0_alpha_test.ps#GLSLC@0x0
+vs_shaders.bin	0	vertex	ac357d34b92b19d3	/shaders/mvppos2_col_tex2.vs#GLSLC@0x0
+vs_shaders.bin	1	vertex	f902d7971342eb0f	/shaders/screenpos2_col_tex2.vs#GLSLC@0x0

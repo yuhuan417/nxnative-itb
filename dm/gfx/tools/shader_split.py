@@ -16,6 +16,7 @@
 #   · MSHD (MercurySteam, Metroid Dread system/shd/*.bshdat): each stage = a control section (+0x20 = control length; sometimes a small compiler option table follows) + the code area starting at the next code header;
 #       NV assembly text follows the first 0x880 bytes of the control section, and SASS disassembly text follows the code area. All 478 files hold "vertex, pixel" in pairs (1, 2 or 4 pairs), paired two by two in order
 #   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders
+#   · GLSLC output as a whole file (Into The Breach: RomFS/shaders/*.vs and *.ps, one stage each): a file that starts with the GLSLC magic 0x19866891 is a compiler output (see glslc_shaders)
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
 #   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
@@ -40,6 +41,7 @@ CAPTURE = GAME.get('shader_glslc_capture', 'off') == 'on'   # GLSLC outputs the 
 UE = GAME.get('shader_ue_decode', 'off') == 'on'   # Unreal Engine shader code archives, decoded on the Mac with the game's own Oodle (uepak.py, DM_OODLE_JOB, hle_oodle.c)
 
 CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
+GLSLC_MAGIC = bytes.fromhex('91688619')   # the GLSLC compiler output header (the file's first 4 bytes when the output is a whole file)
 STAGES = ['vs', 'hs', 'ds', 'gs', 'ps', 'cs']
 SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}
 STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute'}   # shader_map.tsv column 3
@@ -577,7 +579,9 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if path.endswith('.zs') else open(path, 'rb').read()
     if d[:4] == b'Yaz0': d = yaz0(d)
-    if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
+    if d[:4] == GLSLC_MAGIC:   # a whole file that is one GLSLC compiler output (Into The Breach's RomFS/shaders/*.vs and *.ps): one stage each
+        found += glslc_shaders(d, '/' + rel, need=False)
+    elif d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'

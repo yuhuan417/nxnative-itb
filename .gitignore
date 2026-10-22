@@ -4,3 +4,18 @@
 .iosdd_*/
 .DS_Store
 __pycache__/
+
+# Game data and the work folders it produces (the game's files, keys and anything extracted from them stay out of this repository)
+gamedata/
+work/
+
+# Scratch of a Linux build: the tool caches, the translated shaders' intermediate files, the dotnet and SwiftPM caches
+.venv/
+.toolbin/
+.toolcache/
+.xtoolcache/
+.dotnetcli/
+.nuget/
+.swiftpm/
+build/
+tools/xlate/

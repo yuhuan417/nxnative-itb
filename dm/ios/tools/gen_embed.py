@@ -28,7 +28,11 @@ for n in names:
     for sect, lo, hi in parts:
         assert all(len(x) <= 16 for x in sect.split(','))
         fill = min(hi, sz) - lo
-        asm += [f'    .section {sect}', '    .p2align 14', f'    .incbin "{bin_}", {lo:#x}, {fill:#x}']
+        # getsectiondata looks up these payloads by section name, so the linker cannot see a normal reference. Keep each atom under -dead_strip.
+        label = f'_dm_embed_{n}_{lo:x}'
+        asm += [f'    .section {sect}', '    .p2align 14',
+                f'    .globl {label}', f'    .no_dead_strip {label}', f'{label}:',
+                f'    .incbin "{bin_}", {lo:#x}, {fill:#x}']
         if hi - lo > fill: asm.append(f'    .space {hi - lo - fill:#x}')
         asm.append('    .p2align 14')   # Pad the section end to 16K: vm_remap takes whole pages
     flags.append(f'-Wl,-segprot,__DM{n}W,rw,rw')
