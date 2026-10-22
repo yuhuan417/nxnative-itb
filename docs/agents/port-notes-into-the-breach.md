@@ -139,23 +139,59 @@ NVN(nvnCommandBufferBindTextures, void, NVNcommandBuffer *c, NVNshaderStage st, 
 }
 ```
 
-### Signing and installing
+The run after the fix has no red line at all: the same call appears in the init census as `CommandBufferBindTextures=2` (it is called twice, not 238 times — the engine binds one batch per pass rather than one per texture), and the game holds 60 fps to frame 600 with 1 dropped frame, 1180 MiB of footprint, `0 underruns` on 2000 audio callbacks.
 
-The IPA is unsigned, as the repository's builds are: the install tool signs it. `xtool` (the AppImage at `/usr/local/bin/xtool`) does the signing and the install:
+A screenshot of the running game confirms the picture: a dark title screen with its menu column on the left, not a black frame (`developer dvt screenshot` while the app is in the foreground — see the launching notes below).
 
+### Touch screen
+
+The game reads the touch screen every frame (`nn::hid::GetTouchScreenStates<16>`, called from `main+0x2c4140`), so touch is the game's own feature, not an addition: tap the map or a button instead of steering a cursor with the stick.
+
+Two things decide whether a touch actually arrives:
+
+- **The operation mode.** The host publishes the front end's touch points only in handheld mode (`hle_hid.c` `touch_read`), as on the Switch, whose screen is out of reach when docked. The game's first run was in console mode (its window was 1920x1080), so every touch was dropped at the host. The profile sets `op_mode handheld`: a phone is its own screen, and the game draws 1280x720 either way (in console mode it already set the window crop to 1280x720), so the picture does not change and the touch input lives.
+- **The coordinate basis.** `touch_fill_n` maps the front end's normalized points onto the panel's 1280x720 pixels, and the game turns them back into normalized coordinates by dividing by its own screen size (`main+0x2c4158`, three (width, height) pairs selected by flags at `+0x318`). The two must be the same space: sending 1280x720 to a game that divides by 1920x1080 shifts every touch toward the upper left by a third (that is what happened to The Great Ace Attorney, which needed a 1920x1080 basis). Into The Breach renders and crops at 1280x720 in both modes, so the panel's own 1280x720 is the right basis and needs no special case.
+
+The front end is not in the way: a touch that misses every virtual gamepad control goes to the game as a touch point (`DmGamepad.m` `gameBegin` / `pushGame`), and the v1.2.75 build delivers up to 16 points at once.
+
+It works on the phone: with `op_mode handheld` the game takes taps as its own input, which the player confirmed in the menus.
+
+### Signing, installing and launching
+
+The IPA is unsigned, as the repository's builds are: the install tool signs it. `xtool` (the AppImage at `/usr/local/bin/xtool`) does the signing and the install, and `pymobiledevice3`'s DVT service starts and stops the app:
+
+```sh
+export USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd
+
+xtool auth status                                            # the Apple ID and the team
+xtool install --usb <the .ipa>                               # signs it and installs it
+
+# start it (--kill-existing is the default: the old instance is ended first, so a separate pkill is rarely needed)
+pymobiledevice3 developer dvt launch XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# stop it
+pymobiledevice3 developer dvt pkill --bundle XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# start it with switches, no rebuild and no Documents/env.txt needed
+pymobiledevice3 developer dvt launch --env DM_TOUCH_LOG=1 --env 'DM_KEYS=8:T0.5x0.5' \
+    XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# read the app's own log
+pymobiledevice3 apps afc XTL-6Q5D6LN57B.org.nxnative.010057d00b612000 --documents
+> pull log.txt <local file>
 ```
-xtool auth status                                   # the Apple ID and the team
-xtool install --usb <the .ipa>                      # signs it and installs it
-xtool launch --udid <the udid> XTL-<team>.<bundle id>
-```
+
+`launch` prints `Process launched with pid N` and leaves the app in the foreground. `xtool launch` does not: it attaches debugserver, which fails with `DebugserverClient.Error.unknown` here, and iOS backgrounds the app a few seconds after the connection drops — screenshots taken after such a launch show the home screen, not the game.
 
 Two things about this environment (WSL2, the iPhone on the Windows host over usbipd):
 
 - `xtool` keeps its state in `~/.config/xtool` and its cache in `~/.cache/xtool`; both are on a read-only volume here, so the Anisette library (`~/.config/xtool/Anisette/adi/adi.pb`) cannot be written and the install fails with "The volume is read only". The workaround is to run it in a user namespace with the uid mapped, which makes the files writable:
   `unshare -rm --map-user=1000 --map-group=1000 xtool install --usb <the .ipa>`
-- `pymobiledevice3` looks for the usbmuxd socket at its own default path; the device is on `/var/run/usbmuxd` here, so `USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd` has to be set. With it, `pymobiledevice3 apps afc <bundle id> --documents` reaches the app's own container, which is where `log.txt` and `pso_user.tsv` are.
+- `pymobiledevice3` looks for the usbmuxd socket at its own default path; the device is on `/var/run/usbmuxd` here, so `USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd` has to be set (every command above needs it, DVT and `apps afc` alike). The DVT commands also need `--userspace` on iOS 17+; the tool retries over a userspace tunnel by itself and says so in a warning.
 
-The bundle ID the install tool gives the app is `<bundle id>` with the team's prefix (`XTL-6Q5D6LN57B.org.nxnative.010057d00b612000`), and that is the ID `launch` and `apps afc` want.
+The bundle ID the install tool gives the app is `<bundle id>` with the team's prefix (`XTL-6Q5D6LN57B.org.nxnative.010057d00b612000`), and that is the ID `launch`, `pkill` and `apps afc` want.
+
+A tap can also be scripted without a finger: `DM_KEYS` takes `T<x>x<y>` steps in normalized picture coordinates, which go through the same `dm_touch_set` path as the front end's touches (`--env 'DM_KEYS=8:T0.5x0.5~0.3'` presses the middle of the picture for 0.3 s at 8 s after start), and `DM_TOUCH_LOG=1` logs every read the game makes of the touch state.
 
 ## 7. Known limits
 

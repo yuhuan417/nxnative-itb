@@ -27,6 +27,13 @@ modules	main sdk
 romfs_marker	resources/resource.dat
 zip_store	.bank:.dat:.metallib
 
+# ---- Operation mode ----
+# Handheld: the game reads the touch screen every frame (nn::hid::GetTouchScreenStates<16>, main+0x2c4140), and the host publishes the front end's touch points only in handheld
+#   mode -- as on the Switch, whose screen is out of reach when docked (hle_hid.c touch_read). A phone is its own screen, so handheld is where the game's touch input lives.
+#   It draws 1280x720 either way (in console mode it already set the window crop to 1280x720), so handheld keeps the same picture and adds touch: tap the map or a button
+#   instead of steering a cursor with the stick.
+op_mode	handheld
+
 # ---- Memory ----
 # The NPDM declares no system resource (META +0x14 = 0), so there is no virtual address memory: the game uses SetHeapSize with pool − used.
 # Block = 256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region = 4 GB; the heap is the pool − 64 MB.

@@ -110,7 +110,28 @@ See [04](04-graphics.md) section 7. Notes: pass dumps are large and may contain 
 
 ## On-device diagnostics (iOS)
 
-The phone runs an unsigned IPA the user sideloads; nothing is attached to a debugger. The loop is: build an IPA with switches, the user plays and sends `Documents/log.txt` (the previous launch is `log.prev.txt`), read it, repeat.
+The phone runs an unsigned IPA the user sideloads. The loop is: build an IPA with switches, install it, start it, read `Documents/log.txt` (the previous launch is `log.prev.txt`), repeat. Starting, stopping and giving it switches go through `pymobiledevice3`'s DVT service (set `USBMUXD_SOCKET_ADDRESS` when usbmuxd is not at its default path, which is the case under WSL2):
+
+```sh
+export USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd
+
+# stop the app
+pymobiledevice3 developer dvt pkill --bundle XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# start it (--kill-existing is the default: the old instance is ended first, so a separate pkill is rarely needed)
+pymobiledevice3 developer dvt launch XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# start it with switches, without rebuilding or writing Documents/env.txt
+pymobiledevice3 developer dvt launch \
+  --env DM_TOUCH_LOG=1 \
+  --env 'DM_KEYS=8:T0.5x0.5' \
+  XTL-6Q5D6LN57B.org.nxnative.010057d00b612000
+
+# take a screenshot of the running app
+pymobiledevice3 developer dvt screenshot <local file> --userspace
+```
+
+`launch` prints `Process launched with pid N` and leaves the app in the foreground. A launcher that attaches debugserver instead (an install tool's own `launch`) may fail with `DebugserverClient.Error.unknown` and leave the app in the background a few seconds in: screenshots taken afterwards show the home screen, not the game. The DVT commands need `--userspace` on iOS 17+; the tool retries over a userspace tunnel by itself and says so in a warning. `pymobiledevice3 apps afc <bundle id> --documents` opens the app's container (`pull log.txt <local file>` reads the log without asking the user).
 
 - **Switches**: `DM_ENV_FILE=<file> dm/ios/tools/build_ipa.sh` bakes `KEY=VALUE` lines into the app (`dm/env.txt`); `Documents/env.txt` overrides them without a rebuild. Every applied switch is logged at boot (`boot: env KEY=VALUE (source file)`). The app's working directory is `Documents`, so relative output paths (`DM_NVN_SHOT=3600:shot_%d.png`, `DM_NVN_TEXDUMP`) land where the Files app can reach them.
 - **Which build ran**: the first lines name the modules (`main: … patch_off …`), the shader map size (`shader map N entries`) and, for builds that have it, the build-ID gate line. Compare them with the build you sent before reading further; users sometimes send an old log. The save path (`fs mount save:`) shows the data folder, which changes when a sideloading tool gives a reinstall a new one.
