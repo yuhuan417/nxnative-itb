@@ -12,8 +12,6 @@ program_id	01007EF00011E000
 name	The Legend of Zelda: Breath of the Wild
 ipa	ZeldaBreathOfTheWild.ipa
 app_category	public.app-category.adventure-games
-# the virtual gamepad starts in the 3D layout (D-pad, right stick, L3 / R3): the right stick turns the camera
-pad_layout	full
 
 # ---- Graphics ----
 # The frame-interval controller (60 fps cuts in patch_nso.py) and dynamic resolution read the GPU time between the frame's two timestamp reports: each report takes its segment's GPU start / end

@@ -13,8 +13,6 @@ program_id	0100B04011742000
 name	Monster Hunter Rise
 ipa	MonsterHunterRise.ipa
 app_category	public.app-category.action-games
-# a 3D action game: camera on the right stick, item bar on the D-pad
-pad_layout	full
 
 # ---- Versions ----
 # only the merged 16.0.2 copy is extracted

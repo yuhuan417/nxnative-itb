@@ -191,7 +191,7 @@ def heap_check_needed(exefs):   # va_heap from an extraction's ExeFS (the NSP sc
 
 def engine(F):   # keys that follow from the engine rather than from a general signal
     if 'hagi.config' in F['romfs']['root']:   # NERD's Hagi Wii layer: the pointer is the touch screen in handheld mode (docked it is the Joy-Con gyro, which the host does not have)
-        return {'op_mode': ('handheld', 'Hagi (hagi.config): the Wii pointer is the touch screen in handheld mode'), 'pad_layout': ('full', 'Hagi: a 3D game pad (D-pad, right stick)')}
+        return {'op_mode': ('handheld', 'Hagi (hagi.config): the Wii pointer is the touch screen in handheld mode')}
     return {}
 
 
@@ -229,8 +229,8 @@ def heap_signals(log, g):
 
 # ---- Checking the rules against the hand-made profiles ----
 DEFAULTS = {'graphics': 'nvn', 'shader_vk_capture': 'off', 'shader_main_glslc': 'off', 'shader_separable': 'off', 'shader_glslc_capture': 'off', 'shader_ue_decode': 'off', 'shader_oodle': 'off',
-            'op_mode': 'console', 'pad_layout': 'simple', 'nvn_tex_base': '0x20', 'nvn_tex_slots': '32'}
-NO_SIGNAL = {'pad_layout', 'op_mode'}   # no static signal outside the engine presets; the player switches the pad layout in game, DM_OPMODE in env.txt sets the mode
+            'op_mode': 'console', 'pad': 'shown', 'nvn_tex_base': '0x20', 'nvn_tex_slots': '32'}
+NO_SIGNAL = {'pad', 'op_mode'}   # no static signal outside the engine presets; the player switches the pad in game, DM_OPMODE in env.txt sets the mode
 
 
 def find_extraction(root, g):   # (ExeFS, RomFS manifest or folder) for a profile: its survey, else the work folder's extraction of the packed version

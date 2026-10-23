@@ -12,8 +12,6 @@ program_id	0100A00019DE0000
 name	Hades II
 ipa	HadesII.ipa
 app_category	public.app-category.action-games
-# the right stick aims (the weapons with ManualAiming in Game/Weapons/PlayerWeapons.sjson)
-pad_layout	full
 
 # ---- Versions ----
 build	v0	0.0.126424	main=5219053e5eb156be80fbb2f303779531	sdk=d83a56a5558798414c78ec722867a7da

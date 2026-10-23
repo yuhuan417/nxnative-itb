@@ -12,8 +12,6 @@ program_id	010055D009F78000
 name	Fire Emblem: Three Houses
 ipa	FireEmblemThreeHouses.ipa
 app_category	public.app-category.role-playing-games
-# camera on the right stick in the monastery and in battle
-pad_layout	full
 
 # ---- Presentation ----
 # KTGL updates the game 60 times a second on the main thread and presents the latest update from its render thread with the render mode's interval (2 on the Switch: 30 fps).

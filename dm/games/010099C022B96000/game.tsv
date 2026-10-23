@@ -13,7 +13,6 @@ program_id	010099C022B96000
 name	Super Mario Galaxy
 ipa	SuperMarioGalaxy.ipa
 app_category	public.app-category.action-games
-pad_layout	full
 # handheld: the pointer (star bits, menus, the file select) is the touch screen; docked it is the Joy-Con gyro, which the host does not have
 op_mode	handheld
 
