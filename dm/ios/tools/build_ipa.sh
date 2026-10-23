@@ -20,6 +20,10 @@ PKG=$(gp package)
 PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
 OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
 MODS=$(gp modules); MARKER=$(gp romfs_marker)
+# The game data as one packed file instead of the RomFS tree (dm/tools/romfs_pack.py, dm/host/hle_pak.c): romfs_pack=ipa puts romfs.dmpak in the bundle, separate writes it beside the
+#   IPA and leaves it out, so a program-only rebuild is a small IPA and the data goes to the app's Documents once per game version. dir keeps the old tree (a game with no profile key)
+ROMPACK=$(python3 "$DM/games/game.py" "$GAME" romfs_pack 2> /dev/null) || ROMPACK=ipa
+case "$ROMPACK" in ipa|separate|dir) ;; *) die "romfs_pack must be ipa, separate or dir: $ROMPACK" ;; esac
 NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control.nacp
 [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
 VNACP=$(dirname "$ROMFS")/control.nacp; [ -f "$VNACP" ] || VNACP=$W/data/v0/control.nacp
@@ -78,7 +82,14 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app; [ -d "$APP" ] || APP=$(grep -
 rm -rf "$APP/msl" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
 P=Payload/DmIOS.app; MAPS=("$P=$APP" "$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR")
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-MAPS+=("$P/romfs=$ROMFS")
+PAK=${PAK:-$(dirname "$OUT_IPA")/romfs.dmpak}
+case "$ROMPACK" in
+    dir) MAPS+=("$P/romfs=$ROMFS"); t "game data: the RomFS tree (romfs_pack dir)" ;;
+    ipa|separate)
+        python3 "$DM/tools/romfs_pack.py" "$ROMFS" "$PAK" || die "romfs_pack (dm/tools/romfs_pack.py)"
+        t "game data: $PAK ($(du -h "$PAK" | cut -f1))"
+        if [ "$ROMPACK" = ipa ]; then MAPS+=("$P/romfs.dmpak=$PAK"); else t "romfs_pack separate: not in the IPA; copy it to the app's Documents once (pymobiledevice3 apps afc <bundle id> --documents, then push romfs.dmpak romfs.dmpak)"; fi ;;
+esac
 t "pack IPA (already-compressed game files stored, everything else deflated)"
-python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs "${MAPS[@]}" || die "pack_ipa"
+python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store):.dmpak" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

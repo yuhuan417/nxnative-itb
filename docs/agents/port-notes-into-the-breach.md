@@ -2,7 +2,7 @@
 
 - profile: `dm/games/010057D00B612000/` (base title ID `010057D00B612000`)
 - game: Into The Breach, update 1.2.88 (v589824), SDK 13.3.5, NVN. 1.2.75 (v458752) also runs, but its console never ran a typed line: the software keyboard delivered the text and the console's own filter dropped the line, so the update is the build to pack
-- build artifact: an unsigned IPA (see "Artifacts" below); the user sideloads it
+- build artifacts: an unsigned IPA (10 MB: the program) and `romfs.dmpak` (621 MB: the game's data as one packed file); the user sideloads the IPA and the data file goes to the app's Documents once (see "Artifacts" below)
 
 ## 1. What the game is
 
@@ -92,11 +92,26 @@ The pieces that needed care:
 - The framework list comes from `Gen/dm.xcconfig`, with `UIKit`, `Foundation`, `CoreGraphics`, `CoreText`, `GameController` and `AVFoundation` added (the iOS front end needs them), and `-lSystem` for the C library.
 - The app icon needs Apple's `actool` (the asset catalog), which is not here: the icon files are written directly instead (`DM_ICON_FILE` names a PNG; the script resizes it to the sizes iOS asks for and writes the `Info.plist` keys).
 
+### 4.5 `dm/tools/romfs_pack.py` and `dm/host/hle_pak.c`: the game data as one file
+
+The first builds carried the RomFS as 653 files inside the app bundle: 604 MB, so every install moved the whole game again even when only the host's code had changed, and the phone
+wrote 653 small files. The data now ships as one packed file, `romfs.dmpak` (profile key `romfs_pack separate`): the IPA is 10 MB, and the 621 MB go to the app's Documents once per game
+version (`romfs_pack ipa` keeps the packed file in the bundle instead, `dir` keeps the old tree).
+
+`romfs_pack.py` writes the container: an 88-byte header, a table of 48-byte entries in depth-first order with `first_child` / `next_sibling` / `parent` links, a name pool, and the file
+data 16-byte aligned in entry order (`--list`, `--verify` and `--unpack` read it back). `hle_pak.c` maps it read-only at mount and answers the fs calls the game makes for `rom:`:
+`open` (a handle carrying the mount and the entry, no fd), `read` (a memcpy from the mapping), `GetFileSize`, `GetEntryType`, and directories as the snapshot `hle_fs.c` already
+builds for overlay mounts. Paths resolve component by component with an exact match and a case-insensitive fallback, as the host directory backend does through its xattr index.
+
+The boot looks for the data in this order: `DM_ROMFS`, `<App>/romfs` (a directory), `<App>/romfs.dmpak`, `Documents/romfs`, `Documents/romfs.dmpak`; a directory or a packed file
+mounts the same way to the game. Device test: the data file in Documents boots the game (the log's `fs mount rom: → …/Documents/romfs.dmpak (packed RomFS, read-only)`) and it plays.
+
 ## 5. Artifacts
 
 | | |
 |---|---|
-| IPA | `work/nsp/010057D00B612000_build/IntoTheBreach.ipa`, 604 MB, 693 entries |
+| IPA | `work/nsp/010057D00B612000_build/IntoTheBreach.ipa`, 10 MB, 40 entries — the program only: the executable, the shader libraries and the host's tables |
+| game data | `work/nsp/010057D00B612000_build/romfs.dmpak`, 621 MB (650,610,640 bytes), 653 entries / 627 files: the RomFS packed as one file (section 4.5), copied to the app's Documents once per game version |
 | sha256 | `sha256sum` of it (it changes with every rebuild) |
 | app | `Payload/DmIOS.app/DmIOS`, 33.9 MB, arm64, `__TEXT` + `__DMmainW` + `__DMsdkW` |
 | shaders | `Payload/DmIOS.app/msl/b-a712c69b6bb7/` — 5 libraries + 2 readable-tile variants, MSL source |
@@ -109,7 +124,7 @@ What was checked in the built IPA:
 - the embedded module images are byte-exact against the rewritten `main.patched.bin` / `sdk.patched.bin` (the code part, the writable part and the patch area, with the tail padded by zeros), and every section is 16 KB-aligned, which is what the loader checks;
 - `z0 + zw == PATCH_OFF` for both modules, the loader's own layout check;
 - all five shader libraries carry the chain version `a712c69b6bb7` that the profile's `dmsh_chain.h` names, and each holds MSL source (not a metallib);
-- the RomFS marker `resources/resource.dat` is in the IPA, with the same size as the extracted file (354,930,338 bytes);
+- the packed data file holds the RomFS marker `resources/resource.dat` with the same size as the extracted file (354,930,338 bytes), and `dm/tools/romfs_pack.py --verify` reports every byte of all 653 entries equal to the extracted tree;
 - the host's tables (`shader_map.tsv`, `c1_full.tsv`, `pso_manifest.tsv`, the rewriter's `fixups` / `gates` / `cuts` / `obs` tables) and the two fonts are in the app's `dm/` folder;
 - the app icon (the base game's own icon, resized to the sizes iOS asks for) is in the bundle, with the `Info.plist` keys that point at it.
 
@@ -174,6 +189,10 @@ export USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd
 xtool auth status                                            # the Apple ID and the team
 pymobiledevice3 developer dvt pkill --bundle XTL-6Q5D6LN57B.org.nxnative.010057d00b612000   # stop the app first: installing over a running one leaves the old process alive
 xtool install --usb <the .ipa>                               # signs it and installs it
+
+# the game data, once per game version (it survives program updates): 621 MB, about 25 s over USB
+printf 'push <the romfs.dmpak> romfs.dmpak\nexit\n' | \
+    pymobiledevice3 apps afc XTL-6Q5D6LN57B.org.nxnative.010057d00b612000 --documents
 
 # start it (--kill-existing is the default: the old instance is ended first, so a separate pkill is rarely needed)
 pymobiledevice3 developer dvt launch XTL-6Q5D6LN57B.org.nxnative.010057d00b612000

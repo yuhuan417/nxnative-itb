@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 #include <sys/clonefile.h>
 #include <sys/xattr.h>
+#include "hle_pak.h"   // the packed-RomFS backend (hle_pak.c) and the directory entry both it and this file fill
 
 // Every take-over in this file runs on the big host stack (hle_bigstack.c): path buffers are sized by PATH_MAX and one file open takes 6-7 KB of stack, while a game's save thread can have as little as 8 KB (Super Mario 3D World + Bowser's Fury)
 #undef HLE_FORCE
@@ -27,7 +28,6 @@ enum { MODE_READ = 1, MODE_WRITE = 2, MODE_APPEND = 4 };
 enum { ENT_DIR = 0, ENT_FILE = 1 };
 enum { DIRMODE_DIR = 1, DIRMODE_FILE = 2 };
 
-typedef struct { char name[0x301]; uint8_t pad0[3]; int8_t type; uint8_t pad1[3]; int64_t size; } DirectoryEntry;
 _Static_assert(sizeof(DirectoryEntry) == 0x310, "DirectoryEntry layout");
 
 #define MAX_MOUNT 512   // Monster Hunter Rise mounts every add-on content it owns (aoc0 … : 252 licences in the folder) right after the first-boot settings: 16 ended in "mount table full"
@@ -35,7 +35,7 @@ _Static_assert(sizeof(DirectoryEntry) == 0x310, "DirectoryEntry layout");
 // Host: at mount, the committed directory commit (= $DM_SAVE) is clonefile'd as a whole tree into the working directory <commit>.work (APFS copy-on-write, nearly zero cost), and the mount points at the working directory,
 // all game reads and writes happen in the working directory; Commit = clonefile(work → <commit>.new), then renamex_np(RENAME_SWAP) swaps it atomically with commit, then the swapped-out old version is deleted.
 // Killed at any moment, commit is either the old version or the new version, never half-written / a mix of old and new; the next mount discards leftover .work / .new.
-typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; } mount_t;
+typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; int pak; } mount_t;   // pak >= 0: a packed RomFS (hle_pak.c), dir is the file
 static mount_t g_mnt[MAX_MOUNT];   // commit non-empty = transactional save mount
 static int g_nmnt;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -84,9 +84,21 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
         if (!strcmp(g_mnt[i].name, name)) { pthread_mutex_unlock(&g_lock); return RES_OK; }
     if (g_nmnt >= MAX_MOUNT) die("mount table full");
     strlcpy(g_mnt[g_nmnt].name, name, sizeof g_mnt[0].name);
-    g_mnt[g_nmnt].ro = ro; g_mnt[g_nmnt].overlay[0] = 0; g_mnt[g_nmnt].commit[0] = 0;
+    g_mnt[g_nmnt].ro = ro; g_mnt[g_nmnt].overlay[0] = 0; g_mnt[g_nmnt].commit[0] = 0; g_mnt[g_nmnt].pak = -1;
     if (!strcmp(name, "rom") && getenv("DM_ROMFS_OVERLAY"))
         strlcpy(g_mnt[g_nmnt].overlay, getenv("DM_ROMFS_OVERLAY"), sizeof g_mnt[0].overlay);
+    {   // A packed RomFS (dm/tools/romfs_pack.py, one file) mounts instead of a directory: nothing to clone, nothing to index, the file is mapped once (hle_pak.c)
+        struct stat st;
+        if (!stat(dir, &st) && S_ISREG(st.st_mode)) {
+            int p = pak_mount(dir);
+            if (p < 0) { int e = errno; pthread_mutex_unlock(&g_lock);
+                LOG("[RED] fs mount %s: %s is not a packed RomFS the host can read (errno=%d)", name, dir, e); return RES_FAIL; }
+            g_mnt[g_nmnt].pak = p; strlcpy(g_mnt[g_nmnt].dir, dir, sizeof g_mnt[0].dir); g_mnt[g_nmnt].ro = 1; g_nmnt++;
+            pthread_mutex_unlock(&g_lock);
+            LOG("fs mount %s: → %s (packed RomFS, read-only)", name, dir);
+            return RES_OK;
+        }
+    }
     // The transaction directory cannot be set up (leftovers cannot be cleared / clone failed, which really happens on a full disk): do not exit; mount the committed directory read-only -- saves still read, every write fails, commits are no-ops, the committed version is untouched, and the front end is told
     // (each of these three failures used to call die: with the phone's storage full the game exited as soon as it mounted its saves)
     int txn_err = 0;
@@ -280,6 +292,22 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     errno = ENOENT; return 0;
 }
 static int host_path(const char *p, char *out, size_t n, int *ro) { return host_path_ex(p, out, n, ro, 0); }
+// A path on a packed RomFS mount (hle_pak.c): 1 with the mount and the guest-relative path, 0 when no pak mount matched, -1 for a path that climbs out of the root.
+//   Overlays do not apply to a packed mount: the file holds the whole RomFS, which is what a mod overlay would replace.
+static int pak_path(const char *guest, int *pak, char *rel, size_t n) {
+    const char *c = strchr(guest, ':');
+    if (!c) return 0;
+    size_t ln = (size_t)(c - guest);
+    for (int i = 0; i < g_nmnt; i++) {
+        if (g_mnt[i].pak < 0 || strlen(g_mnt[i].name) != ln || strncmp(g_mnt[i].name, guest, ln)) continue;
+        const char *rest = c + 1;
+        if (strstr(rest, "/.")) { char normed[1024]; if (!norm_rest(rest, normed, sizeof normed)) return -1; rest = normed; }
+        if (strlcpy(rel, rest, n) >= n) return -1;
+        *pak = g_mnt[i].pak;
+        return 1;
+    }
+    return 0;
+}
 static int set_guest_name(const char *hp, const char *path) {
     const char *end = path + strlen(path); while (end > path && end[-1] == '/') end--;
     const char *start = end; while (start > path && start[-1] != '/' && start[-1] != ':') start--;
@@ -311,7 +339,9 @@ HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", 
     if (r == RES_OK && getenv("DM_ROMFS_OVERLAY")) {
         PATH_LOCK();
         for (int i = 0; i < g_nmnt; i++) if (!strcmp(g_mnt[i].name, name)) {
-            strlcpy(g_mnt[i].overlay, getenv("DM_ROMFS_OVERLAY"), sizeof g_mnt[i].overlay); break;
+            if (g_mnt[i].pak >= 0) LOG("[RED] fs mount %s: DM_ROMFS_OVERLAY is ignored on a packed RomFS (the file holds the whole RomFS)", name);
+            else strlcpy(g_mnt[i].overlay, getenv("DM_ROMFS_OVERLAY"), sizeof g_mnt[i].overlay);
+            break;
         }
     }
     return r;
@@ -464,6 +494,14 @@ HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; the mount table is permanent, unmou
 
 // ---------- Files ----------
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+    { int pk, pr; char prel[1024];          // a packed RomFS (hle_pak.c): the handle carries the entry, there is no fd
+      if ((pr = pak_path(path, &pk, prel, sizeof prel)) < 0) return RES_PATH_NOT_FOUND;
+      if (pr) {
+          if (mode & (MODE_WRITE | MODE_APPEND)) { LOG("fs write to a read-only mount: %s", path); return RES_FAIL; }
+          if (pak_open(pk, prel, out)) { if (g_flag.fs) LOG("fs open not found: %s", path); return RES_PATH_NOT_FOUND; }
+          if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → pak entry", (now_ns() - g_t0_ns) / 1e9, path, mode);
+          return RES_OK;
+      } }
     HP(path);
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
@@ -481,6 +519,12 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
 }
 HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", Result, h_fs_ReadFile, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz) {
     if (!h) { *out = 0; return RES_FAIL; }   // a file handle is an fd; 0 is stdin and never a file the game opened: the null handle the game keeps using after a failed open
+    if (pak_is_handle(h)) {                  // a packed RomFS file (hle_fs.c OpenFile): copy straight out of the mapping
+        size_t got = 0;
+        dm_guest_write_prepare(buf, sz);
+        if (pak_read(h, off, buf, sz, &got)) return RES_FAIL;
+        *out = got; return RES_OK;
+    }
     size_t got = 0;
     dm_guest_write_prepare(buf, sz);   // The destination may be a texture pool page write-protected by the graphics layer: a kernel write to a read-only page returns EFAULT instead of page-faulting, so unprotect and mark dirty first
     while (got < sz) {
@@ -534,6 +578,7 @@ HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp
 }
 HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", Result, h_fs_GetFileSize, int64_t *out, uint64_t h) {
     if (!h) return RES_FAIL;
+    if (pak_is_handle(h)) { int64_t z = pak_handle_size(h); if (z < 0) return RES_FAIL; *out = z; return RES_OK; }
     struct stat st; if (fstat((int)h, &st)) return err_res("fstat", "fd");
     *out = st.st_size; return RES_OK;
 }
@@ -546,9 +591,10 @@ HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)
 HLE_FORCE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", "fsp-srv; host writes are already in the page cache, flushing is a no-op", Result, h_fs_FlushFile, uint64_t h) { (void)h; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fsp-srv → close(2)", void, h_fs_CloseFile, uint64_t h) {
     if (!h) return;   // the null handle after a failed open (see ReadFile): do not touch fd 0
+    if (pak_is_handle(h)) { pak_close(h); return; }
     g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0;
     close((int)h); }
-HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) { return g_fmode[(int)h & 0xffff]; }
+HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) { if (pak_is_handle(h)) return MODE_READ; return g_fmode[(int)h & 0xffff]; }
 
 // ---------- Path operations ----------
 HLE_FORCE("_ZN2nn2fs10CreateFileEPKcl", "fsp-srv → open(O_CREAT|O_EXCL)+ftruncate", Result, h_fs_CreateFile, const char *path, int64_t sz) {
@@ -610,6 +656,9 @@ HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) {
+    { int pk, pr; char prel[1024];
+      if ((pr = pak_path(path, &pk, prel, sizeof prel)) < 0) return RES_PATH_NOT_FOUND;
+      if (pr) { int t = pak_type(pk, prel); if (t < 0) return RES_PATH_NOT_FOUND; *out = t == PAK_ENT_DIR ? ENT_DIR : ENT_FILE; return RES_OK; } }
     HP(path); struct stat st;
     if (stat(hp, &st)) return err_res("stat", hp);
     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
@@ -651,6 +700,17 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+    { int pk, pr; char prel[1024];          // a packed RomFS: list the directory into a snapshot, the form the overlay mounts already use
+      if ((pr = pak_path(path, &pk, prel, sizeof prel)) < 0) return RES_PATH_NOT_FOUND;
+      if (pr) {
+          int64_t n = pak_list(pk, prel, mode, NULL, 0);
+          if (n < 0) return RES_PATH_NOT_FOUND;
+          dirh_t *h = calloc(1, sizeof *h); if (!h) return RES_FAIL;
+          h->d = NULL; h->mode = mode; h->nsnap = n; h->snap = calloc(n ? n : 1, sizeof *h->snap);
+          if (!h->snap) { free(h); return RES_FAIL; }
+          if (pak_list(pk, prel, mode, h->snap, n) != n) { free(h->snap); free(h); return RES_FAIL; }
+          *out = (uint64_t)h; return RES_OK;
+      } }
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
@@ -680,7 +740,7 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
 }
 HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → closedir(3)", void, h_fs_CloseDirectory, uint64_t hh) {
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------

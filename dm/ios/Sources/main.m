@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include "game_profile.h"   // game profile constants (the RomFS marker path)
+int pak_check(const char *file, const char *marker);   // dm/host/hle_pak.c: is this a packed RomFS holding the marker?
 
 int dm_main(int argc, char **argv);   // dm/host/main.c compiled in with -Dmain=dm_main
 void dm_host_preload_start(int argc, char **argv);
@@ -19,6 +20,9 @@ static NSString *romfs_locate(void) {
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     for (NSString *d in @[[doc stringByAppendingPathComponent:@"romfs"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs"]])
         if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]]) return d;   // only a directory containing the game profile's romfs_marker path counts (Mario: System/Resource, the resource size table)
+    // the packed RomFS (dm/tools/romfs_pack.py): one file instead of the tree, the way a build without the data in the IPA ships it. Documents first, so a data file put there wins over the bundle's copy
+    for (NSString *p in @[[doc stringByAppendingPathComponent:@"romfs.dmpak"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.dmpak"]])
+        if ([fm fileExistsAtPath:p] && pak_check(p.fileSystemRepresentation, [@DM_GAME_ROMFS_MARKER UTF8String])) return p;
     return nil;
 }
 
@@ -48,7 +52,7 @@ static int boot_env(void) {
         }
     }
     NSString *romfs = romfs_locate();
-    if (!romfs) { fprintf(stderr, "boot: game files not found (<App>/romfs or Documents/romfs)\n"); return 0; }
+    if (!romfs) { fprintf(stderr, "boot: game files not found (<App>/romfs, <App>/romfs.dmpak, Documents/romfs or Documents/romfs.dmpak): copy romfs.dmpak into Documents, then start the app again\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
@@ -93,16 +97,29 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
 @interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @end
+static int g_alerted;
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.rootViewController = front_ios_root();
     [self.window makeKeyAndVisible];
 }
+// No game data: a build with the data outside the IPA (profile key romfs_pack separate) needs romfs.dmpak in Documents. Say so, with where to put it, instead of a black screen
+- (void)showDataMissingAlert {
+    NSString *app = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"the app";
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Game data not found"
+        message:[NSString stringWithFormat:@"This build keeps the game's files in one separate file, romfs.dmpak, which is not in the app yet. Copy it into the app's Documents folder (Files app → On My iPhone → %@), then start the app again.", app]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    fprintf(stderr, "boot: showing the game data not found alert\n");
+    [self.window.rootViewController presentViewController:ac animated:YES completion:nil];
+}
 - (void)sceneWillResignActive:(UIScene *)s { front_ios_focus_event(0); }
 - (void)sceneDidEnterBackground:(UIScene *)s { front_ios_focus_event(1); }
 - (void)sceneWillEnterForeground:(UIScene *)s { front_ios_focus_event(2); }
-- (void)sceneDidBecomeActive:(UIScene *)s { front_ios_focus_event(3); }
+- (void)sceneDidBecomeActive:(UIScene *)s { front_ios_focus_event(3);
+    if (!g_boot_ok && !g_alerted) { g_alerted = 1; dispatch_async(dispatch_get_main_queue(), ^{ [self showDataMissingAlert]; }); }   // after the scene is active, so the alert can be presented
+}
 @end
 
 int main(int argc, char **argv) {
