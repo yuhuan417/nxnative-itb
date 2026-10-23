@@ -1,7 +1,7 @@
 # Into The Breach (Switch) on iOS — port report
 
 - profile: `dm/games/010057D00B612000/` (base title ID `010057D00B612000`)
-- game: Into The Breach, update 1.2.75 (v458752), SDK 13.3.5, NVN
+- game: Into The Breach, update 1.2.88 (v589824), SDK 13.3.5, NVN. 1.2.75 (v458752) also runs, but its console never ran a typed line: the software keyboard delivered the text and the console's own filter dropped the line, so the update is the build to pack
 - build artifact: an unsigned IPA (see "Artifacts" below); the user sideloads it
 
 ## 1. What the game is
@@ -59,7 +59,7 @@ A GLSLC output starts with the magic `0x19866891`; its total length is at +0x44;
 | `mem_used` | (default 64 MB) | the `0x04030000` in the same table confirms it |
 | `nvn_tex_base` etc. | the common values | not exercised: no shader reads a driver segment |
 
-The profile carries one row per build (`v1`, display 1.2.75) and `modules main sdk`.
+The profile carries one row per build: `v1` (display 1.2.75) and `v2` (display 1.2.88); `package v2` picks the newer one. The two builds share `sdk` (build ID `3644a676…`) and differ in `main` (`0c5ea0cb…` and `ffd0078f…`), and 1.2.88 needs no shader rebuild: of the 627 RomFS files only `.lua`, `.csv`, `.map`, `.bank` and `.dat` differ, no shader file among them.
 
 ## 4. What was built, and how
 
@@ -152,9 +152,17 @@ Two things decide whether a touch actually arrives:
 - **The operation mode.** The host publishes the front end's touch points only in handheld mode (`hle_hid.c` `touch_read`), as on the Switch, whose screen is out of reach when docked. The game's first run was in console mode (its window was 1920x1080), so every touch was dropped at the host. The profile sets `op_mode handheld`: a phone is its own screen, and the game draws 1280x720 either way (in console mode it already set the window crop to 1280x720), so the picture does not change and the touch input lives.
 - **The coordinate basis.** `touch_fill_n` maps the front end's normalized points onto the panel's 1280x720 pixels, and the game turns them back into normalized coordinates by dividing by its own screen size (`main+0x2c4158`, three (width, height) pairs selected by flags at `+0x318`). The two must be the same space: sending 1280x720 to a game that divides by 1920x1080 shifts every touch toward the upper left by a third (that is what happened to The Great Ace Attorney, which needed a 1920x1080 basis). Into The Breach renders and crops at 1280x720 in both modes, so the panel's own 1280x720 is the right basis and needs no special case.
 
-The front end is not in the way: a touch that misses every virtual gamepad control goes to the game as a touch point (`DmGamepad.m` `gameBegin` / `pushGame`), and the v1.2.75 build delivers up to 16 points at once.
+The front end is not in the way: a touch that misses every virtual gamepad control goes to the game as a touch point (`DmGamepad.m` `gameBegin` / `pushGame`), and the game delivers up to 16 points at once.
 
 It works on the phone: with `op_mode handheld` the game takes taps as its own input, which the player confirmed in the menus.
+
+### Console
+
+The game has a developer console: three fingers swiped down the panel open it, three fingers swiped up close it. A three-finger swipe is awkward on a phone and iOS uses multi-finger swipes itself, so the profile maps the two gamepad buttons to the same gesture (profile key `touch_gesture zl=down zr=up`): ZL plays the swipe down, ZR the swipe up. `hle_hid.c` `touch_gesture_edge` takes the press edge from either input path and calls `hle_touch.c touch_gesture_swipe3`, which reports three fingers (ids 13–15) travelling down or up over 350 ms with one Start and one End, so the game sees a complete swipe and not fingers that vanish under it. The gestures are host-side only: the game's code is untouched.
+
+The console runs a command after the software keyboard returns its text. That is what 1.2.88 fixes. On 1.2.75 the keyboard opened and its text came back through `nn::swkbd::ShowKeyboard` (the only call site, `main+0x57a9d4`), but nothing ran: the text is filtered character by character against the font's glyphs (`main+0x3b1bb8`), which passes letters and digits and drops the newline that would submit the line, and the console only runs a line on a terminator. The handler (`main+0x57a4a4`, char in `w2`, state in `w1`/`w21`) is instruction for instruction the same in 1.2.88 (`main+0x57c474`), and so is the code around the software keyboard call, so the difference that makes the console work in 1.2.88 lies elsewhere in the build; the update is packed for that reason.
+
+A hosted keyboard is not the way out either: the game imports `nn::hid::InitializeKeyboard` and polls `GetKeyboardState` every frame (`main+0x34af84`), and filling that state from the host was tried and typed nothing into the console (the game never consumed it). The console's characters come from the software keyboard alone.
 
 ### Signing, installing and launching
 
@@ -164,6 +172,7 @@ The IPA is unsigned, as the repository's builds are: the install tool signs it. 
 export USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd
 
 xtool auth status                                            # the Apple ID and the team
+pymobiledevice3 developer dvt pkill --bundle XTL-6Q5D6LN57B.org.nxnative.010057d00b612000   # stop the app first: installing over a running one leaves the old process alive
 xtool install --usb <the .ipa>                               # signs it and installs it
 
 # start it (--kill-existing is the default: the old instance is ended first, so a separate pkill is rarely needed)

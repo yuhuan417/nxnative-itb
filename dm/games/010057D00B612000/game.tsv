@@ -16,9 +16,10 @@ ipa	IntoTheBreach.ipa
 app_category	public.app-category.strategy-games
 
 # ---- Versions ----
-# only the merged 1.2.75 copy is extracted; the base game's own build IDs are added when needed
+# both updates are extracted (v1 1.2.75, v2 1.2.88; v2 is packed); the base game's own build IDs are added when needed
 build	v1	1.2.75	main=0c5ea0cb96033317fa4a7f37276f1de9	sdk=3644a6760469451cabc99f00c540acc2
-package	v1
+build	v2	1.2.88	main=ffd0078f805bf3dc13c281319095f8e7	sdk=3644a6760469451cabc99f0c540acc2
+package	v2
 shader_versions	v1
 
 # ---- Files ----
@@ -33,6 +34,10 @@ zip_store	.bank:.dat:.metallib
 #   It draws 1280x720 either way (in console mode it already set the window crop to 1280x720), so handheld keeps the same picture and adds touch: tap the map or a button
 #   instead of steering a cursor with the stick.
 op_mode	handheld
+# The console (the game's own debug console, opened from the touch screen with a three-finger swipe down and closed with one up -- the gesture the iPad build has and the Switch
+#   build kept). A three-finger swipe is awkward on a phone and iOS uses multi-finger swipes itself, so ZL and ZR play them instead (hle_touch.c touch_gesture_swipe3). Neither
+#   button is used in play (ZL and ZR have no binding in this game).
+touch_gesture	zl=down zr=up
 
 # ---- Memory ----
 # The NPDM declares no system resource (META +0x14 = 0), so there is no virtual address memory: the game uses SetHeapSize with pool − used.

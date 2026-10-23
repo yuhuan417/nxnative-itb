@@ -9,10 +9,21 @@
 #include "dm.h"
 #include "front.h"
 #include <pthread.h>
+#include <stdatomic.h>
 enum { F_EMPTY, F_DOWN, F_LIFTED };
 static struct { int st, reported, again; float x, y, ax, ay; } g_f[16];   // again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start)
 static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
 static int64_t g_tsamp; static uint64_t g_tlast_ns;
+
+// Synthetic gesture (profile key touch_gesture): three fingers swiping the panel, which a game may take as a command. Into The Breach opens its console with a swipe down
+//   on the touch screen, and a three-finger swipe is awkward on a phone (the system also uses multi-finger swipes); the profile maps a button to it instead.
+//   The fingers take ids 13-15 (the front end can use 0-15, but a game holding 13 touches is not a thing), are reported as Start once, travel down over GEST_NS, and are
+//   reported as End once, so the game sees a complete swipe rather than fingers that vanish.
+enum { GEST_N = 3, GEST_ID = 13 };
+#define GEST_NS 350000000ull
+static _Atomic int g_gest_req;                        // pad path asked for a swipe (touch_gesture_swipe3): 0 none, 1 down, 2 up; taken by the next read
+static int g_gest_on, g_gest_rep, g_gest_up; static uint64_t g_gest_t0;
+void touch_gesture_swipe3(int up) { atomic_store(&g_gest_req, up ? 2 : 1); }   // up: the fingers travel from the bottom to the top, otherwise from the top down
 
 void dm_touch_set(const dm_touch *t, int n) {
     pthread_mutex_lock(&g_tl);
@@ -56,6 +67,24 @@ int touch_fill_n(void *out, int max, uint64_t now_ns) {
         }
     }
     pthread_mutex_unlock(&g_tl);
+    // Synthetic three-finger downward swipe: a request starts it, the fingers then travel down for GEST_NS and lift, one report each for Start and End
+    { int r = atomic_exchange(&g_gest_req, 0); if (r && !g_gest_on) { g_gest_on = 1; g_gest_rep = 0; g_gest_up = (r == 2); g_gest_t0 = now_ns; } }
+    if (g_gest_on) {
+        double p = (double)(now_ns - g_gest_t0) / (double)GEST_NS; int liftp = p >= 1.0;
+        if (p > 1.0) p = 1.0;
+        if (!liftp || g_gest_rep) {                                        // liftp with nothing reported yet: the swipe was shorter than a frame, skip straight to the end
+            for (int i = 0; i < GEST_N && k < max; i++) {
+                uint32_t at = liftp ? 2u : g_gest_rep ? 0u : 1u;
+                uint8_t *s = o + 0x10 + 0x28 * k++;
+                int32_t x = clampi(0.30f + 0.20f * i, 1279), y = clampi((float)(g_gest_up ? 0.90 - 0.68 * p : 0.22 + 0.68 * p), 719), d = 40, z = 0, fid = GEST_ID + i;
+                int64_t gdt = dt;
+                memcpy(s + 0x00, &gdt, 8); memcpy(s + 0x08, &at, 4); memcpy(s + 0x0c, &fid, 4);
+                memcpy(s + 0x10, &x, 4); memcpy(s + 0x14, &y, 4); memcpy(s + 0x18, &d, 4); memcpy(s + 0x1c, &d, 4); memcpy(s + 0x20, &z, 4);
+            }
+            if (!liftp) g_gest_rep = 1;
+        }
+        if (liftp) g_gest_on = 0;
+    }
     int32_t cnt = k; memcpy(o + 0, &samp, 8); memcpy(o + 8, &cnt, 4);
     // DM_TOUCH_LOG=1 (acceptance diagnostics): each read with non-zero touch points logs one line -- sample number, touch count, and for each point finger_id / panel x,y / attributes (1 Start, 2 End); capped at 500 lines
     static int lg = -1, nl; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;

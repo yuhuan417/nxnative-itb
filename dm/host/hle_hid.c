@@ -26,11 +26,23 @@ static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history ent
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
+// Profile key touch_gesture: buttons that play the synthetic three-finger swipe (hle_touch.c touch_gesture_swipe3) instead of a finger on the panel, as {bit, up} pairs. On
+//   the press edge only, from either path (the virtual gamepad's buttons go through dm_input_set, a physical controller's through dm_pad_set)
+void touch_gesture_swipe3(int up);
+static const struct { int bit, up; } g_gesture_map[] = DM_GAME_TOUCH_GESTURES;
+static void touch_gesture_edge(uint64_t buttons, uint64_t old) {
+    for (int i = 0; i < DM_GAME_TOUCH_GESTURE_COUNT; i++) {
+        uint64_t m = 1ull << g_gesture_map[i].bit;
+        if ((buttons & m) && !(old & m)) touch_gesture_swipe3(g_gesture_map[i].up == 2);   // 1 = down, 2 = up (game.tsv touch_gesture)
+    }
+}
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_btn, buttons); atomic_fetch_or(&g_latch, buttons & ~old); atomic_store(&g_axes, pack(lx, ly, rx, ry));
+    touch_gesture_edge(buttons, old);
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old); atomic_store(&g_pad_axes, pack(lx, ly, rx, ry));
+    touch_gesture_edge(buttons, old);
 }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,

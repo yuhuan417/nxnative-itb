@@ -126,6 +126,14 @@ def header(g):
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
+    tg = g.get('touch_gesture', 'none')   # buttons that play a touch gesture instead of a finger (hle_touch.c touch_gesture_swipe3): "<button>=<gesture>" pairs, button a b x y ls rs l r zl zr plus minus left up right down, gesture down / up = the three-finger swipe, which is awkward to do on a phone screen
+    gestures = []
+    if tg != 'none':
+        for part in tg.split():
+            btn, _, ges = part.partition('=')
+            if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or ges not in ('down', 'up'):
+                sys.exit(f'{g.id}: touch_gesture takes <button>=<down|up> pairs, got {part}')
+            gestures.append((('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn), 1 if ges == 'down' else 2))
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
@@ -159,6 +167,8 @@ def header(g):
          *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_FULL {int(pl == "full")}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
+         f'#define DM_GAME_TOUCH_GESTURE_COUNT {len(gestures)}',
+         f'#define DM_GAME_TOUCH_GESTURES ' + '{' + ', '.join('{%d, %d}' % gpair for gpair in gestures) + '}' if gestures else '#define DM_GAME_TOUCH_GESTURES {{0, 0}}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',
