@@ -5,6 +5,7 @@
 
 Result swkbd_show(void *out, const void *arg, int (*input)(const char *, const char *, const char *, const char *, int, char *, int));
 int front_text_input(const char *t, const char *s, const char *g, const char *i, int m, char *o, int c) { (void)t; (void)s; (void)g; (void)i; (void)m; (void)o; (void)c; return -1; }
+int touch_gesture_command_take(char *out, size_t cap) { (void)out; (void)cap; return 0; }   // hle_touch.c: no console-command button in this test
 // Diagnostics the core uses (real definitions in hle_os.c / hle_thread.c); this test only links hle_swkbd.c
 // The frame counter advances on every call (as a present does on the device), and case 8 rewinds it to exercise the same-frame duplicate guard
 static uint64_t g_test_frame;

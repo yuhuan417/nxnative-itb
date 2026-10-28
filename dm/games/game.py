@@ -134,6 +134,13 @@ def header(g):
             if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or ges not in ('down', 'up', 'toggle'):
                 sys.exit(f'{g.id}: touch_gesture takes <button>=<down|up|toggle> pairs, got {part}')
             gestures.append((('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn), 1 if ges == 'down' else 2 if ges == 'up' else 3))
+    cc = g.get('console_command', '')   # "<button>=<line>": one press opens the console, answers its input with the line and closes it again (hle_touch.c touch_gesture_command_start), for games whose console is opened by touch_gesture
+    cc_bit, cc_line = -1, ''
+    if cc:
+        btn, _, cc_line = cc.partition('=')
+        if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or not cc_line.strip():
+            sys.exit(f'{g.id}: console_command takes <button>=<line>, got {cc}')
+        cc_bit = ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn)
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
@@ -169,6 +176,8 @@ def header(g):
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_TOUCH_GESTURE_COUNT {len(gestures)}',
          f'#define DM_GAME_TOUCH_GESTURES ' + '{' + ', '.join('{%d, %d}' % gpair for gpair in gestures) + '}' if gestures else '#define DM_GAME_TOUCH_GESTURES {{0, 0}}',
+         f'#define DM_GAME_CONSOLE_COMMAND_BIT {cc_bit}',   # -1: no console command button
+         f'#define DM_GAME_CONSOLE_COMMAND_LINE {q(cc_line)}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',

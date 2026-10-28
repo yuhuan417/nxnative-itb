@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include "front.h"
 int thr_name_of(pthread_t pt, char *out, size_t n);   // hle_thread.c: guest thread name by pthread ("0x1001 main thread"); 0 when the pthread is not a guest thread
+// hle_touch.c: the console-command button (profile key console_command) answers the console's prompt without a box; returns 1 and writes the line when one is waiting
+int touch_gesture_command_take(char *out, size_t cap);
 
 enum { ARG_HEADER = 0x24, ARG_SUB = 0xa6, ARG_GUIDE = 0x1a8, ARG_MAXLEN = 0x3ac, ARG_MINLEN = 0x3b0, ARG_UTF8 = 0x3bd,
        ARG_INIT_OFF = 0x3c0, ARG_INIT_LEN = 0x3c4, ARG_WORKBUF = 0x4d0,
@@ -105,10 +107,13 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
         call, (unsigned long long)f0, fprev ? (long long)(f0 - fprev) : 0, who, (void *)pthread_self(), in_box);
 
     uint64_t args = swkbd_args_hash(title, sub, guide, maxlen);
+    int cmd = touch_gesture_command_take(text, sizeof text);   // the console-command button's line, when its console is asking
     int dup = 0, dup_n = 0;
-    pthread_mutex_lock(&g_swkbd_dedup_mu);
-    if (g_swkbd_dedup_frame == f0 && g_swkbd_dedup_args == args && g_swkbd_dedup_n < SWKBD_DEDUP_MAX) { dup = 1; dup_n = ++g_swkbd_dedup_n; }
-    pthread_mutex_unlock(&g_swkbd_dedup_mu);
+    if (!cmd) {
+        pthread_mutex_lock(&g_swkbd_dedup_mu);
+        if (g_swkbd_dedup_frame == f0 && g_swkbd_dedup_args == args && g_swkbd_dedup_n < SWKBD_DEDUP_MAX) { dup = 1; dup_n = ++g_swkbd_dedup_n; }
+        pthread_mutex_unlock(&g_swkbd_dedup_mu);
+    }
     if (dup) {
         atomic_fetch_sub(&g_swkbd_in_box, 1);
         LOG("swkbd: call #%d duplicate of the request answered in frame %llu (initial '%s', swallowed %d/%d in this frame) → cancel without a box",
@@ -123,8 +128,11 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     // which kept the stutter until that went too. The inline keyboard below still freezes it: there the host's input box blocks a game that on hardware keeps running and steps by real time (Monster Hunter Rise)
     // Test switch DM_TEST_SWKBD_HOLD_MS=<ms> (with DM_KBD): the keyboard stays up that long before DM_KBD's text is returned, the way a player types into the input box (for reproducing on the Mac what the game's other threads do meanwhile)
     static int hold = -1; if (hold < 0) { const char *h = getenv("DM_TEST_SWKBD_HOLD_MS"); hold = h ? atoi(h) : 0; }
-    if (script && hold > 0) usleep((useconds_t)hold * 1000);
-    int r = script ? (snprintf(text, sizeof text, "%s", script), 1) : input(title, sub, guide, init, maxlen > 0 ? maxlen : 0, text, sizeof text);
+    if (!cmd && script && hold > 0) usleep((useconds_t)hold * 1000);
+    int r;
+    if (cmd) r = 1;   // the console-command button's line, no box
+    else if (script) { snprintf(text, sizeof text, "%s", script); r = 1; }
+    else r = input(title, sub, guide, init, maxlen > 0 ? maxlen : 0, text, sizeof text);
     atomic_fetch_sub(&g_swkbd_in_box, 1);   // the box is down again: what follows is only the result being handed back
     {   // remember what this frame's box was asked for, for the duplicate test above (a new frame resets the count)
         uint64_t fe = dm_guest_frame();

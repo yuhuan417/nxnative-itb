@@ -39,9 +39,13 @@ zip_store	.bank:.dat:.metallib
 op_mode	handheld
 # The console (the game's own debug console, opened from the touch screen with a three-finger swipe down and closed with one up -- the gesture the iPad build has and the Switch
 #   build kept). A three-finger swipe is awkward on a phone and iOS uses multi-finger swipes itself, so the buttons play them instead (hle_touch.c touch_gesture_swipe3):
-#   ZL toggles -- the first press plays the down swipe that opens the console, the next the up swipe that closes it -- and ZR always plays the up swipe (close), so the
-#   console can be dismissed without inverting the toggle. Neither button is used in play (ZL and ZR have no binding in this game).
-touch_gesture	zl=toggle zr=up
+#   ZL toggles -- the first press plays the down swipe that opens the console, the next the up swipe that closes it. Neither button is used in play (ZL and ZR have no
+#   binding in this game).
+touch_gesture	zl=toggle
+# ZR runs the console's turn reset in one press: it plays the down swipe (opens the console), answers the console's input with "undoturn" and plays the up swipe again
+#   (closes it). The console runs a line only on a terminator, which the host appends (console_command, hle_touch.c touch_gesture_command_start). While the console is
+#   already open ZR only closes it, as before.
+console_command	zr=undoturn
 
 # ---- Memory ----
 # The NPDM declares no system resource (META +0x14 = 0), so there is no virtual address memory: the game uses SetHeapSize with pool − used.

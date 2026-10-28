@@ -7,6 +7,8 @@ typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
 int touch_fill(void *out, uint64_t now_ns);
 int touch_gesture_toggle(void);   // hle_touch.c: the toggle button's next direction (0 = down/open, 1 = up/close)
+void touch_gesture_command_start(const char *line);   // hle_touch.c: the console-command button (opens, answers, closes)
+int touch_gesture_command_take(char *out, size_t cap);
 static int fails, cases;
 typedef struct { int64_t dt; uint32_t attr; int32_t fid, x, y; } want_pt;
 static void expect(const char *what, uint64_t now, int64_t samp, int n, const want_pt *w) {
@@ -70,6 +72,23 @@ int main(void) {
     cases++;
     if (up2 != 1 || cnt != 3 || at != 1 || y < 640) { fails++; printf("✗ toggle 2: up=%d points=%d attr=%u y=%d, expected an up swipe (1, 3, 1, 648)\n", up2, cnt, at, y); }
     else printf("✓ toggle 2 plays the up swipe (3 fingers at the bottom, Start)\n");
+    // 9 console command: the button opens (down swipe), the line comes back with a terminator, and the close swipe waits for the opening swipe to end
+    touch_fill(g, gt + 900000000ull);                            // finish the up swipe of the toggle test
+    uint64_t ct = gt + 1000000000ull;
+    touch_gesture_command_start("undoturn");
+    touch_fill(g, ct); memcpy(&cnt, g + 8, 4); memcpy(&at, g + 0x18, 4); memcpy(&y, g + 0x24, 4);
+    cases++;
+    if (cnt != 3 || at != 1 || y < 150 || y > 170) { fails++; printf("✗ command open: points=%d attr=%u y=%d, expected the down swipe (3, 1, 158)\n", cnt, at, y); }
+    else printf("✓ console command opens with the down swipe\n");
+    char line[32]; int got = touch_gesture_command_take(line, sizeof line);
+    cases++;
+    if (!got || strcmp(line, "undoturn\n")) { fails++; printf("✗ command line '%s' (taken %d), expected 'undoturn\\n'\n", line, got); }
+    else printf("✓ console command answers 'undoturn\\n'\n");
+    touch_fill(g, ct + 400000000ull);                            // ends the down swipe; the queued up swipe starts here
+    touch_fill(g, ct + 401000000ull); memcpy(&cnt, g + 8, 4); memcpy(&at, g + 0x18, 4); memcpy(&y, g + 0x24, 4);
+    cases++;
+    if (cnt != 3 || at != 1 || y < 640) { fails++; printf("✗ command close: points=%d attr=%u y=%d, expected the up swipe after the opening swipe (3, 1, 648)\n", cnt, at, y); }
+    else printf("✓ console command closes with the up swipe after the opening swipe\n");
     printf("== %d checks, %d failed ==\n", cases, fails);
     return fails != 0;
 }
