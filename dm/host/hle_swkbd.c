@@ -10,9 +10,11 @@
 // A game that sets isUseUtf8 = 1 after MakePreset reads the result back as a C string; UTF-16 output is supported as well per the original convention.
 // No window and DM_KBD unset: return as cancel (no popup, no hang). DM_KBD="text": no popup, return that text directly as OK (windowless testing / lockstep comparison).
 #include "hle.h"
+#include <stdatomic.h>
 #include <stddef.h>
 #include <unistd.h>
 #include "front.h"
+int thr_name_of(pthread_t pt, char *out, size_t n);   // hle_thread.c: guest thread name by pthread ("0x1001 main thread"); 0 when the pthread is not a guest thread
 
 enum { ARG_HEADER = 0x24, ARG_SUB = 0xa6, ARG_GUIDE = 0x1a8, ARG_MAXLEN = 0x3ac, ARG_MINLEN = 0x3b0, ARG_UTF8 = 0x3bd,
        ARG_INIT_OFF = 0x3c0, ARG_INIT_LEN = 0x3c4, ARG_WORKBUF = 0x4d0,
@@ -58,6 +60,33 @@ size_t swkbd_u8_to_u16(const char *s, size_t max_units, uint16_t *out, size_t ca
 int g_swkbd_name_panel;
 int g_swkbd_numeric_max = -1;   // ≥0 = this input is a quantity box, value = upper limit (set by dm_textinput.c, read by the front end input box, set back to -1 after use)
 int (*g_swkbd_unfilter)(void);   // registered by the host (dm_charname_unfilter in hle_charname.c; NULL in unit tests): keyboard requests from the naming panel bypass the game's ASCII typing filter
+// Diagnostics for the repeated-prompt report (Into The Breach's console asked for the software keyboard 6 times in one frame after the 3-finger swipe):
+//   every ShowKeyboard call gets a serial number, its guest frame, frames since the previous call, and the calling guest thread, so the log shows whether the
+//   repeats come one per frame from the same thread (a console retry loop) or from more than one thread at once (the console loop and the main thread).
+//   in_box counts the calls that are inside the input box at this moment; more than one means the game asked again before the previous call returned, which the
+//   real swkbd applet answers with a launch error rather than with a second keyboard. The counters themselves do not change behaviour; the guard below does.
+static _Atomic int g_swkbd_calls, g_swkbd_in_box;
+static _Atomic uint64_t g_swkbd_last_frame;
+// Single-instance guard: on hardware the swkbd applet cannot be up twice, and a game that asks several times within one frame (Into The Breach's console asks
+//   once per touch event of the 3-finger swipe) would otherwise show one input box per request. A request whose title / subtitle / hint / length limit are the
+//   same as the one already answered in this guest frame is answered with cancel without a box, at most SWKBD_DEDUP_MAX times per frame, so a bounded retry
+//   loop still gets its box. The prefill is not part of the key: the console re-asks with the line it just got as the initial text, and a request that differs
+//   only in its prefill is the same prompt echoed back, not a new question. The guard keys on the guest frame because the frame does not advance while a box
+//   is up: a whole burst arrives in the frame that opened the first box.
+#define SWKBD_DEDUP_MAX 100
+static pthread_mutex_t g_swkbd_dedup_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_swkbd_dedup_frame, g_swkbd_dedup_args;
+static int g_swkbd_dedup_n;
+static uint64_t swkbd_args_hash(const char *a, const char *b, const char *c, int32_t maxlen) {   // FNV-1a over the decoded title, subtitle, hint and the length limit
+    uint64_t h = 1469598103934665603ull;
+    const char *part[3] = { a, b, c };
+    for (int i = 0; i < 3; i++) {
+        for (const char *s = part[i]; *s; s++) { h ^= (uint8_t)*s; h *= 1099511628211ull; }
+        h ^= 0xFF; h *= 1099511628211ull;   // part separator, so "ab" + "c" and "a" + "bc" hash differently
+    }
+    h ^= (uint32_t)maxlen; h *= 1099511628211ull;
+    return h;
+}
 typedef int (*swkbd_input_fn)(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap);
 Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     const uint8_t *arg = arg_;
@@ -69,6 +98,24 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     const uint8_t *work; memcpy(&work, arg + ARG_WORKBUF, 8);
     if (ilen > 0 && work) swkbd_u16_to_u8((const uint16_t *)(work + ioff), (size_t)ilen, init, sizeof init);
 
+    int call = atomic_fetch_add(&g_swkbd_calls, 1) + 1, in_box = atomic_fetch_add(&g_swkbd_in_box, 1) + 1;
+    uint64_t f0 = dm_guest_frame(), fprev = atomic_exchange(&g_swkbd_last_frame, f0);
+    char who[64]; if (!thr_name_of(pthread_self(), who, sizeof who)) snprintf(who, sizeof who, "non-guest thread");
+    LOG("swkbd: call #%d enter at frame %llu (%+lld frames since the previous call), thread '%s' %p, %d call(s) inside the box",
+        call, (unsigned long long)f0, fprev ? (long long)(f0 - fprev) : 0, who, (void *)pthread_self(), in_box);
+
+    uint64_t args = swkbd_args_hash(title, sub, guide, maxlen);
+    int dup = 0, dup_n = 0;
+    pthread_mutex_lock(&g_swkbd_dedup_mu);
+    if (g_swkbd_dedup_frame == f0 && g_swkbd_dedup_args == args && g_swkbd_dedup_n < SWKBD_DEDUP_MAX) { dup = 1; dup_n = ++g_swkbd_dedup_n; }
+    pthread_mutex_unlock(&g_swkbd_dedup_mu);
+    if (dup) {
+        atomic_fetch_sub(&g_swkbd_in_box, 1);
+        LOG("swkbd: call #%d duplicate of the request answered in frame %llu (initial '%s', swallowed %d/%d in this frame) → cancel without a box",
+            call, (unsigned long long)f0, init, dup_n, SWKBD_DEDUP_MAX);
+        return SWKBD_RESULT_CANCELED;
+    }
+
     const char *script = getenv("DM_KBD");
     // The guest clock keeps running while the keyboard is up, as on the Switch: the applet blocks the calling thread and the game's other threads go on in real time. d2r-mobile froze it here
     // (monsters should not attack while the player typed), which left the threads that wait on the clock spinning: Octopath Traveler 0's sound stuttered and the input box lagged on an iPhone
@@ -78,9 +125,18 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     static int hold = -1; if (hold < 0) { const char *h = getenv("DM_TEST_SWKBD_HOLD_MS"); hold = h ? atoi(h) : 0; }
     if (script && hold > 0) usleep((useconds_t)hold * 1000);
     int r = script ? (snprintf(text, sizeof text, "%s", script), 1) : input(title, sub, guide, init, maxlen > 0 ? maxlen : 0, text, sizeof text);
+    atomic_fetch_sub(&g_swkbd_in_box, 1);   // the box is down again: what follows is only the result being handed back
+    {   // remember what this frame's box was asked for, for the duplicate test above (a new frame resets the count)
+        uint64_t fe = dm_guest_frame();
+        pthread_mutex_lock(&g_swkbd_dedup_mu);
+        if (fe != g_swkbd_dedup_frame) g_swkbd_dedup_n = 0;
+        g_swkbd_dedup_frame = fe; g_swkbd_dedup_args = args;
+        pthread_mutex_unlock(&g_swkbd_dedup_mu);
+    }
     g_swkbd_numeric_max = -1;   // the numeric box mark applies to this one time only (set by dm_textinput.c before bringing up the keyboard)
-    LOG("swkbd: title '%s' initial '%s' limit %d → %s%s%s", title, init, maxlen,
-        r > 0 ? "OK '" : r == 0 ? "cancel" : "no window, treated as cancel", r > 0 ? text : "", r > 0 ? "'" : "");
+    LOG("swkbd: call #%d title '%s' initial '%s' limit %d → %s%s%s (thread '%s' %p, frames %llu..%llu)", call, title, init, maxlen,
+        r > 0 ? "OK '" : r == 0 ? "cancel" : "no window, treated as cancel", r > 0 ? text : "", r > 0 ? "'" : "",
+        who, (void *)pthread_self(), (unsigned long long)f0, (unsigned long long)dm_guest_frame());
     if (r <= 0) return SWKBD_RESULT_CANCELED;
     if (g_swkbd_name_panel && g_swkbd_unfilter && g_swkbd_unfilter()) LOG("swkbd: naming panel -- turned off the game's ASCII input filter on the returned string (Chinese names allowed, see hle_charname.c)");
 

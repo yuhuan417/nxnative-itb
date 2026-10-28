@@ -5,6 +5,11 @@
 
 Result swkbd_show(void *out, const void *arg, int (*input)(const char *, const char *, const char *, const char *, int, char *, int));
 int front_text_input(const char *t, const char *s, const char *g, const char *i, int m, char *o, int c) { (void)t; (void)s; (void)g; (void)i; (void)m; (void)o; (void)c; return -1; }
+// Diagnostics the core uses (real definitions in hle_os.c / hle_thread.c); this test only links hle_swkbd.c
+// The frame counter advances on every call (as a present does on the device), and case 8 rewinds it to exercise the same-frame duplicate guard
+static uint64_t g_test_frame;
+uint64_t dm_guest_frame(void) { return g_test_frame++; }
+int thr_name_of(pthread_t pt, char *out, size_t n) { (void)pt; (void)out; (void)n; return 0; }
 
 static int fails, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; printf("  ✗ "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -86,6 +91,16 @@ int main(void) {
     static const uint8_t w7[] = {'K', 'b', 'd', 0};
     CHECK(r == 0 && bytes_eq(w7, sizeof w7) && g_called == 0, "DM_KBD path differs (input box called %d times)", g_called);
     unsetenv("DM_KBD");
+
+    printf("8 same-frame duplicate of the same request: cancel, no second box\n");
+    g_test_frame = 100; mkarg(1, 16, hero, 4); g_ret = 1; g_reply = "dup";
+    r = swkbd_show(&str, arg, stub);
+    CHECK(r == 0, "first call Result %#x expected 0", r);
+    g_test_frame = 101;   // the frame the first call recorded (entry 100, recorded after one increment)
+    mkarg(1, 16, hero, 4); g_ret = 1; g_reply = "dup2";
+    r = swkbd_show(&str, arg, stub);
+    CHECK(r == 0x29F, "duplicate Result %#x expected 0x29F", r);
+    CHECK(g_called == 0, "duplicate opened the input box %d times", g_called);
 
     printf("%s: %d/%d\n", fails ? "FAILED" : "all passed", checks - fails, checks);
     return fails != 0;
