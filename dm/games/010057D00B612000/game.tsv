@@ -46,6 +46,9 @@ touch_gesture	zl=toggle
 #   (closes it). The console runs a line only on a terminator, which the host appends (console_command, hle_touch.c touch_gesture_command_start). While the console is
 #   already open ZR only closes it, as before.
 console_command	zr=undoturn
+# The ZR key stays on its own while the pad is hidden (touch mode, DmGamepad.m), so the turn reset is still one tap for a player who runs pure touch: the mode key
+#   alone would leave the console reachable only through the three-finger swipe the pad exists to avoid.
+touch_mode_key	zr
 
 # ---- Memory ----
 # The NPDM declares no system resource (META +0x14 = 0), so there is no virtual address memory: the game uses SetHeapSize with pool − used.

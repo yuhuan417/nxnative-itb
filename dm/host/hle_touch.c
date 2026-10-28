@@ -43,7 +43,8 @@ int touch_gesture_toggle(void) {      // the next direction for a toggle button:
 }
 // Console command macro (profile key console_command, one button): open the console, answer its input with the line and close it again. The line waits at most
 //   CONSOLE_CMD_NS for the console to ask, so a swipe the game missed cannot answer some later prompt with it.
-#define CONSOLE_CMD_NS 3000000000ull
+#define CONSOLE_CMD_NS 10000000000ull   // the console usually asks within a frame of the down swipe, but a load between the two has taken seconds; the only keyboard this host answers is the console's, so a longer window costs nothing
+
 static pthread_mutex_t g_cmd_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_cmd_line[96]; static uint64_t g_cmd_t0; static int g_cmd_on;
 static uint64_t cmd_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }

@@ -126,21 +126,27 @@ def header(g):
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
+    btns = ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down')   # DmGamepad.m B_A..B_DOWN, in that order
     tg = g.get('touch_gesture', 'none')   # buttons that play a touch gesture instead of a finger (hle_touch.c touch_gesture_swipe3): "<button>=<gesture>" pairs, button a b x y ls rs l r zl zr plus minus left up right down, gesture down / up = the three-finger swipe, which is awkward to do on a phone screen; toggle = down when the last swipe was up (opens) and up when it was down (closes), for a console opened and closed with one button
     gestures = []
     if tg != 'none':
         for part in tg.split():
             btn, _, ges = part.partition('=')
-            if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or ges not in ('down', 'up', 'toggle'):
+            if btn not in btns or ges not in ('down', 'up', 'toggle'):
                 sys.exit(f'{g.id}: touch_gesture takes <button>=<down|up|toggle> pairs, got {part}')
-            gestures.append((('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn), 1 if ges == 'down' else 2 if ges == 'up' else 3))
+            gestures.append((btns.index(btn), 1 if ges == 'down' else 2 if ges == 'up' else 3))
     cc = g.get('console_command', '')   # "<button>=<line>": one press opens the console, answers its input with the line and closes it again (hle_touch.c touch_gesture_command_start), for games whose console is opened by touch_gesture
     cc_bit, cc_line = -1, ''
     if cc:
         btn, _, cc_line = cc.partition('=')
-        if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or not cc_line.strip():
+        if btn not in btns or not cc_line.strip():
             sys.exit(f'{g.id}: console_command takes <button>=<line>, got {cc}')
-        cc_bit = ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn)
+        cc_bit = btns.index(btn)
+    tk = g.get('touch_mode_key', 'none')   # one button drawn on its own while the pad is hidden (DmGamepad.m touch mode), e.g. a console button a pure-touch player still needs; none = no key
+    tk_bit = -1
+    if tk != 'none':
+        if tk not in btns: sys.exit(f'{g.id}: touch_mode_key takes one button ({", ".join(btns)}), got {tk}')
+        tk_bit = btns.index(tk)
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
@@ -178,6 +184,7 @@ def header(g):
          f'#define DM_GAME_TOUCH_GESTURES ' + '{' + ', '.join('{%d, %d}' % gpair for gpair in gestures) + '}' if gestures else '#define DM_GAME_TOUCH_GESTURES {{0, 0}}',
          f'#define DM_GAME_CONSOLE_COMMAND_BIT {cc_bit}',   # -1: no console command button
          f'#define DM_GAME_CONSOLE_COMMAND_LINE {q(cc_line)}',
+         f'#define DM_GAME_TOUCH_MODE_KEY {tk_bit}',   # -1: no key stays in touch mode
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',

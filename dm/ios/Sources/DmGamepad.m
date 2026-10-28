@@ -7,6 +7,8 @@
 //   The round key at the top centre, between − and +, switches the pad and the game's own touch screen: in pad mode its controls are drawn and touches on them give buttons, in touch mode the
 //     controls are hidden and every other touch goes to the game's touch screen (what the Switch does on the touch screen alone). It is labelled with the mode it is in, "PAD" / "TOUCH"; the
 //     choice is kept in NSUserDefaults (each game is its own app, so per game) and the first launch uses the profile's pad key.
+//   The profile's touch_mode_key button (Into The Breach: ZR, the console's turn reset) is drawn on its own in touch mode, in the spot it has on the pad: a game that needs that one button
+//     would otherwise make the player switch the whole pad on. It takes its touches before the game's touch screen, and it is hidden in pad mode (the pad draws it) and with a controller.
 //   Touch-down ownership: locked keys first (shoulders, − / +, the mode key, L3 / R3), then whichever of the diamond, the D-pad and the two sticks has the smallest distance / grab radius (the left stick's grab circle borders the D-pad).
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
@@ -56,6 +58,7 @@ static const CGFloat
     K_RSTICK_R = 60, K_RKNOB_R = 24,                // right stick: ring and knob radius
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down
+static const int k_touch_key = DM_GAME_TOUCH_MODE_KEY;   // profile key touch_mode_key: the one key drawn while the pad is hidden (-1: none)
 static NSString *const k_pad_key = @"DmPadHidden";   // NSUserDefaults: 1 = touch mode (the pad hidden), 0 = the pad drawn
 
 @interface DmGamepad : UIView
@@ -70,6 +73,7 @@ static __weak DmGamepad *g_view;
     CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one layer per key
     CAShapeLayer *_ring[2], *_knob[2];
     CAShapeLayer *_swap; CATextLayer *_swapLabel; BOOL _swapHeld;
+    CAShapeLayer *_touchKey; CATextLayer *_touchLabel;   // the key that stays in touch mode, or nil
     BOOL _sticksShown;                             // a stick was held at the last refresh
     CALayer *_controls;                            // holds every control layer: hidden in touch mode and while a physical controller is connected (the view itself stays, for game touches)
     CALayer *_mode;                                // the mode key, outside _controls: it stays while the pad is hidden, it is the way back to the pad
@@ -113,6 +117,7 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
             _key[b] = shape(_controls);
             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
         }
+        if (k_touch_key >= 0) { _touchKey = shape(self.layer); _touchLabel = label(_touchKey, names[k_touch_key]); }   // above the controls, below the mode key
         _mode = [CALayer layer]; [self.layer addSublayer:_mode];   // above the controls
         _swap = shape(_mode); _swapLabel = label(_swap, @"");
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_pad_key];
@@ -128,6 +133,7 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
 - (void)applyMode {   // draw the pad's controls or hide them; the mode key stays, it is the way back
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.hidden = _padHidden || _padOff;
+    if (_touchKey) _touchKey.hidden = !(_padHidden && !_padOff);
     _mode.hidden = _padOff;
     _swapLabel.string = _padHidden ? @"TOUCH" : @"PAD";
     [CATransaction commit];
@@ -178,6 +184,13 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     return -1;
 }
 - (BOOL)inSwap:(CGPoint)p { return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6; }
+- (BOOL)inTouchKey:(CGPoint)p {   // the key that stays in touch mode: the pad key's own reach
+    if (!_touchKey || _touchKey.hidden) return NO;
+    CGFloat u = self.u;
+    if (isDrop(k_touch_key)) return dist(p, [self dropCenter:k_touch_key]) <= [self dropR:k_touch_key] * 1.35;
+    if (isClick(k_touch_key)) return dist(p, [self clickCenter:k_touch_key]) <= K_CLICK_R * u * 1.35;
+    return CGRectContainsPoint(CGRectInset([self pillRect:k_touch_key], -8 * u, -8 * u), p);
+}
 - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
     uint64_t m = 0; CGFloat r = self.faceR * 1.25;
     for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
@@ -249,6 +262,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         if (_padOff) { game |= [self gameBegin:t]; continue; }
         CGPoint p = [t locationInView:self];
         int hit = _padHidden ? -1 : [self btnAt:p];   // in touch mode the pad's keys are not there to take a touch
+        if (hit < 0 && _padHidden && [self inTouchKey:p]) hit = k_touch_key;   // ... except the one that stays
         if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
         if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }   // the mode key takes touches in both modes (a pad key wins where the two overlap, as before)
         if (_padHidden) { game |= [self gameBegin:t]; continue; }
@@ -323,23 +337,25 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CFRelease(f);
 }
 
+- (void)placeKey:(CAShapeLayer *)k label:(CATextLayer *)l for:(int)b u:(CGFloat)u {   // a locked key: a shoulder teardrop, an L3 / R3 circle or a − / + pill
+    if (isDrop(b)) {
+        BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
+        setPath(k, dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(l, c, 16 * u);   // tip toward the near top corner
+    } else if (isClick(b)) {
+        CGPoint c = [self clickCenter:b]; setPath(k, circlePath(c, K_CLICK_R * u)); placeLabel(l, c, 13 * u);
+    } else {
+        CGRect rc = [self pillRect:b];
+        setPath(k, CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(l, CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+    }
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat u = self.u;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.frame = _mode.frame = self.layer.bounds;
     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
-    for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
-        if (isDrop(b)) {
-            BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
-            setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
-        } else if (isClick(b)) {
-            CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
-        } else {
-            CGRect rc = [self pillRect:b];
-            setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
-        }
-    }
+    for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i]; [self placeKey:_key[b] label:_label[b] for:b u:u]; }
+    if (_touchKey) [self placeKey:_touchKey label:_touchLabel for:k_touch_key u:u];
     static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
     for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
     CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
@@ -360,6 +376,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
     _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+    if (_touchKey) { BOOL on = (all >> k_touch_key) & 1; _touchKey.fillColor = (on ? k_on : k_idle).CGColor; _touchLabel.foregroundColor = (on ? k_textOn : k_text).CGColor; }
     for (int i = 0; i < 2; i++) {
         CGPoint h = [self stickHome:i], o = [self knobOffset:i];
         _knob[i].position = CGPointMake(h.x + o.x, h.y + o.y); _knob[i].fillColor = (_stick[i] ? k_on : k_idle).CGColor;
