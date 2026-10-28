@@ -146,7 +146,7 @@ mkdir -p "$APP/dm" && cp -R Gen/dm/. "$APP/dm/" || die "copy the host's tables"
 # The app icon: Apple's actool (the asset catalog) is not here, so the icon files are written directly. iOS takes the icon from the bundle's loose .png files
 #   (CFBundleIconFiles) or from the asset catalog; the loose files work for an app that is not built by Xcode.
 if [ -n "${DM_ICON_FILE:-}" ] && [ -f "$DM_ICON_FILE" ]; then
-    ICON_PY=${ICON_PY:-$FONT_PY}
+    ICON_PY=${ICON_PY:-${FONT_PY:-python3}}   # FONT_PY may be unset (line 73 defaults it), and set -u would abort here
     "$ICON_PY" - "$DM_ICON_FILE" "$APP" <<'PY' || die "app icon (DM_ICON_FILE=<png>; needs Pillow: pip install pillow, or ICON_PY=<python with it>)"
 import os, sys
 from PIL import Image
