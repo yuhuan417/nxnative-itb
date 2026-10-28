@@ -19,11 +19,22 @@ static int64_t g_tsamp; static uint64_t g_tlast_ns;
 //   on the touch screen, and a three-finger swipe is awkward on a phone (the system also uses multi-finger swipes); the profile maps a button to it instead.
 //   The fingers take ids 13-15 (the front end can use 0-15, but a game holding 13 touches is not a thing), are reported as Start once, travel down over GEST_NS, and are
 //   reported as End once, so the game sees a complete swipe rather than fingers that vanish.
+//   A button mapped to "toggle" plays the down swipe first and then alternates, so one button opens the console and closes it again; an explicit down/up swipe sets the
+//   same state, so a separate close button (or a swipe the game missed) does not invert the next toggle.
 enum { GEST_N = 3, GEST_ID = 13 };
 #define GEST_NS 350000000ull
 static _Atomic int g_gest_req;                        // pad path asked for a swipe (touch_gesture_swipe3): 0 none, 1 down, 2 up; taken by the next read
+static _Atomic int g_gest_down;                       // last direction asked for: 1 = down (the console is open), 0 = up (closed)
 static int g_gest_on, g_gest_rep, g_gest_up; static uint64_t g_gest_t0;
-void touch_gesture_swipe3(int up) { atomic_store(&g_gest_req, up ? 2 : 1); }   // up: the fingers travel from the bottom to the top, otherwise from the top down
+void touch_gesture_swipe3(int up) {   // up: the fingers travel from the bottom to the top, otherwise from the top down
+    atomic_store(&g_gest_req, up ? 2 : 1);
+    atomic_store(&g_gest_down, up ? 0 : 1);
+}
+int touch_gesture_toggle(void) {      // the next direction for a toggle button: down when the last swipe was up, up when it was down; returns 1 for up
+    int up = atomic_load(&g_gest_down) != 0;
+    touch_gesture_swipe3(up);
+    return up;
+}
 
 void dm_touch_set(const dm_touch *t, int n) {
     pthread_mutex_lock(&g_tl);

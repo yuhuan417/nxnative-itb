@@ -26,14 +26,18 @@ static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history ent
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
-// Profile key touch_gesture: buttons that play the synthetic three-finger swipe (hle_touch.c touch_gesture_swipe3) instead of a finger on the panel, as {bit, up} pairs. On
-//   the press edge only, from either path (the virtual gamepad's buttons go through dm_input_set, a physical controller's through dm_pad_set)
+// Profile key touch_gesture: buttons that play the synthetic three-finger swipe (hle_touch.c touch_gesture_swipe3) instead of a finger on the panel, as {bit, direction} pairs.
+//   Direction 1 = down, 2 = up, 3 = toggle (down when the last swipe was up, up when it was down: one button opens and closes the console). On the press edge only,
+//   from either path (the virtual gamepad's buttons go through dm_input_set, a physical controller's through dm_pad_set)
 void touch_gesture_swipe3(int up);
+int touch_gesture_toggle(void);
 static const struct { int bit, up; } g_gesture_map[] = DM_GAME_TOUCH_GESTURES;
 static void touch_gesture_edge(uint64_t buttons, uint64_t old) {
     for (int i = 0; i < DM_GAME_TOUCH_GESTURE_COUNT; i++) {
         uint64_t m = 1ull << g_gesture_map[i].bit;
-        if ((buttons & m) && !(old & m)) touch_gesture_swipe3(g_gesture_map[i].up == 2);   // 1 = down, 2 = up (game.tsv touch_gesture)
+        if (!(buttons & m) || (old & m)) continue;
+        if (g_gesture_map[i].up == 3) touch_gesture_toggle();
+        else touch_gesture_swipe3(g_gesture_map[i].up == 2);
     }
 }
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {

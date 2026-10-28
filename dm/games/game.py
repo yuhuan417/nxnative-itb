@@ -126,14 +126,14 @@ def header(g):
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
-    tg = g.get('touch_gesture', 'none')   # buttons that play a touch gesture instead of a finger (hle_touch.c touch_gesture_swipe3): "<button>=<gesture>" pairs, button a b x y ls rs l r zl zr plus minus left up right down, gesture down / up = the three-finger swipe, which is awkward to do on a phone screen
+    tg = g.get('touch_gesture', 'none')   # buttons that play a touch gesture instead of a finger (hle_touch.c touch_gesture_swipe3): "<button>=<gesture>" pairs, button a b x y ls rs l r zl zr plus minus left up right down, gesture down / up = the three-finger swipe, which is awkward to do on a phone screen; toggle = down when the last swipe was up (opens) and up when it was down (closes), for a console opened and closed with one button
     gestures = []
     if tg != 'none':
         for part in tg.split():
             btn, _, ges = part.partition('=')
-            if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or ges not in ('down', 'up'):
-                sys.exit(f'{g.id}: touch_gesture takes <button>=<down|up> pairs, got {part}')
-            gestures.append((('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn), 1 if ges == 'down' else 2))
+            if btn not in ('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down') or ges not in ('down', 'up', 'toggle'):
+                sys.exit(f'{g.id}: touch_gesture takes <button>=<down|up|toggle> pairs, got {part}')
+            gestures.append((('a', 'b', 'x', 'y', 'ls', 'rs', 'l', 'r', 'zl', 'zr', 'plus', 'minus', 'left', 'up', 'right', 'down').index(btn), 1 if ges == 'down' else 2 if ges == 'up' else 3))
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)

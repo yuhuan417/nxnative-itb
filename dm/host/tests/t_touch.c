@@ -6,6 +6,7 @@
 typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
 int touch_fill(void *out, uint64_t now_ns);
+int touch_gesture_toggle(void);   // hle_touch.c: the toggle button's next direction (0 = down/open, 1 = up/close)
 static int fails, cases;
 typedef struct { int64_t dt; uint32_t attr; int32_t fid, x, y; } want_pt;
 static void expect(const char *what, uint64_t now, int64_t samp, int n, const want_pt *w) {
@@ -55,6 +56,20 @@ int main(void) {
     dm_touch_set(NULL, 0); e.x = 0.5f; e.y = 0.5f; dm_touch_set(&e, 1);
     expect("re-press: the old End first (320, 180)", T0 + 233333338, 15, 1, (want_pt[]){{16666667, 2, 3, 320, 180}});
     expect("re-press: then the new Start (640, 360)", T0 + 250000005, 16, 1, (want_pt[]){{16666667, 1, 3, 640, 360}});
+    dm_touch_set(NULL, 0); touch_fill((uint8_t[0x290]){0}, T0 + 266666672);                   // end the re-press
+    // 8 The toggle gesture alternates: first press down (fingers start at 0.22 × 720 = 158), then up (0.90 × 720 = 648)
+    uint8_t g[0x290]; uint64_t gt = T0 + 300000000ull; int32_t cnt, y; uint32_t at;
+    int up1 = touch_gesture_toggle();
+    touch_fill(g, gt); memcpy(&cnt, g + 8, 4); memcpy(&at, g + 0x18, 4); memcpy(&y, g + 0x24, 4);
+    cases++;
+    if (up1 != 0 || cnt != 3 || at != 1 || y < 150 || y > 170) { fails++; printf("✗ toggle 1: up=%d points=%d attr=%u y=%d, expected a down swipe (0, 3, 1, 158)\n", up1, cnt, at, y); }
+    else printf("✓ toggle 1 plays the down swipe (3 fingers at the top, Start)\n");
+    touch_fill(g, gt + 400000000ull);                           // finish the swipe (End)
+    int up2 = touch_gesture_toggle();
+    touch_fill(g, gt + 500000000ull); memcpy(&cnt, g + 8, 4); memcpy(&at, g + 0x18, 4); memcpy(&y, g + 0x24, 4);
+    cases++;
+    if (up2 != 1 || cnt != 3 || at != 1 || y < 640) { fails++; printf("✗ toggle 2: up=%d points=%d attr=%u y=%d, expected an up swipe (1, 3, 1, 648)\n", up2, cnt, at, y); }
+    else printf("✓ toggle 2 plays the up swipe (3 fingers at the bottom, Start)\n");
     printf("== %d checks, %d failed ==\n", cases, fails);
     return fails != 0;
 }
