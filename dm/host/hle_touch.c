@@ -32,29 +32,33 @@ static _Atomic int g_gest_req;                        // pad path asked for a sw
 static _Atomic int g_gest_down;                       // last direction asked for: 1 = down (the console is open), 0 = up (closed)
 static int g_gest_on, g_gest_rep, g_gest_up, g_gest_pend; static uint64_t g_gest_t0;   // pend: a request that came in while the current swipe was still running
 static void gest_start(int r, uint64_t t0) { g_gest_on = 1; g_gest_rep = 0; g_gest_up = (r == 2); g_gest_t0 = t0; }
-void touch_gesture_swipe3(int up) {   // up: the fingers travel from the bottom to the top, otherwise from the top down
-    atomic_store(&g_gest_req, up ? 2 : 1);
-    atomic_store(&g_gest_down, up ? 0 : 1);
-}
-int touch_gesture_toggle(void) {      // the next direction for a toggle button: down when the last swipe was up, up when it was down; returns 1 for up
-    int up = atomic_load(&g_gest_down) != 0;
-    touch_gesture_swipe3(up);
-    return up;
-}
 // Console command macro (profile key console_command, one button): open the console, answer its input with the line and close it again. The line waits at most
 //   CONSOLE_CMD_NS for the console to ask, so a swipe the game missed cannot answer some later prompt with it.
 #define CONSOLE_CMD_NS 10000000000ull   // the console usually asks within a frame of the down swipe, but a load between the two has taken seconds; the only keyboard this host answers is the console's, so a longer window costs nothing
 
 static pthread_mutex_t g_cmd_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_cmd_line[96]; static uint64_t g_cmd_t0; static int g_cmd_on;
+void dm_console_lua_mode(int on);   // hle_console.c: the engine console's Lua-mode flag (Into The Breach; the phone has no tab key to switch it)
+void touch_gesture_swipe3(int up) {   // up: the fingers travel from the bottom to the top, otherwise from the top down
+    atomic_store(&g_gest_req, up ? 2 : 1);
+    atomic_store(&g_gest_down, up ? 0 : 1);
+    if (!up && !g_cmd_on) dm_console_lua_mode(1);   // a console the player asked for opens in Lua mode (the macro's own open sets its mode in touch_gesture_command_start)
+}
+int touch_gesture_toggle(void) {      // the next direction for a toggle button: down when the last swipe was up, up when it was down; returns 1 for up
+    int up = atomic_load(&g_gest_down) != 0;
+    touch_gesture_swipe3(up);
+    return up;
+}
 static uint64_t cmd_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
 int touch_gesture_console_open(void) { return atomic_load(&g_gest_down) != 0; }
 void touch_gesture_command_start(const char *line) {
     if (!line || !*line) return;
+    int lua = !strncmp(line, "lua ", 4);   // "lua …" runs the rest as Lua (the prefix is stripped; "money 100" still gets its dm_console_line_filter rewrite)
     pthread_mutex_lock(&g_cmd_mu);
-    snprintf(g_cmd_line, sizeof g_cmd_line, "%s", line);
+    snprintf(g_cmd_line, sizeof g_cmd_line, "%s", lua ? line + 4 : line);
     g_cmd_t0 = cmd_now(); g_cmd_on = 1;
     pthread_mutex_unlock(&g_cmd_mu);
+    dm_console_lua_mode(lua);   // the macro's own open: the line's mode (0 keeps the built-in commands like undoturn working)
     touch_gesture_swipe3(0);   // open the console
 }
 int touch_gesture_command_take(char *out, size_t cap) {

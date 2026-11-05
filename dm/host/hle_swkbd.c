@@ -17,6 +17,9 @@
 int thr_name_of(pthread_t pt, char *out, size_t n);   // hle_thread.c: guest thread name by pthread ("0x1001 main thread"); 0 when the pthread is not a guest thread
 // hle_touch.c: the console-command button (profile key console_command) answers the console's prompt without a box; returns 1 and writes the line when one is waiting
 int touch_gesture_command_take(char *out, size_t cap);
+// hle_console.c: in the developer console's Lua mode, "money 100" → "money(100)" (the args shape the engine's runner cannot parse as Lua); other text passes untouched.
+//   dm_console_answer_hook handles the "xp <n>" and "skill ..." commands entirely host-side (the pilots live in the profile, out of Lua's reach) and falls back to the filter.
+int dm_console_answer_hook(char *text, size_t cap);
 
 enum { ARG_HEADER = 0x24, ARG_SUB = 0xa6, ARG_GUIDE = 0x1a8, ARG_MAXLEN = 0x3ac, ARG_MINLEN = 0x3b0, ARG_UTF8 = 0x3bd,
        ARG_INIT_OFF = 0x3c0, ARG_INIT_LEN = 0x3c4, ARG_WORKBUF = 0x4d0,
@@ -133,6 +136,7 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     if (cmd) r = 1;   // the console-command button's line, no box
     else if (script) { snprintf(text, sizeof text, "%s", script); r = 1; }
     else r = input(title, sub, guide, init, maxlen > 0 ? maxlen : 0, text, sizeof text);
+    if (r > 0) dm_console_answer_hook(text, sizeof text);   // the host's "xp"/"skill" commands, then the console's Lua-mode "money(100)" rewrite
     atomic_fetch_sub(&g_swkbd_in_box, 1);   // the box is down again: what follows is only the result being handed back
     {   // remember what this frame's box was asked for, for the duplicate test above (a new frame resets the count)
         uint64_t fe = dm_guest_frame();

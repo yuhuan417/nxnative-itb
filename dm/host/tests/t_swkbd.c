@@ -6,6 +6,9 @@
 Result swkbd_show(void *out, const void *arg, int (*input)(const char *, const char *, const char *, const char *, int, char *, int));
 int front_text_input(const char *t, const char *s, const char *g, const char *i, int m, char *o, int c) { (void)t; (void)s; (void)g; (void)i; (void)m; (void)o; (void)c; return -1; }
 int touch_gesture_command_take(char *out, size_t cap) { (void)out; (void)cap; return 0; }   // hle_touch.c: no console-command button in this test
+void dm_console_lua_mode(int on);   // hle_console.c: the developer console's Lua-mode flag (cases 9–12)
+int dm_console_lua_on(void);
+int dm_console_answer_hook(char *text, size_t cap);
 // Diagnostics the core uses (real definitions in hle_os.c / hle_thread.c); this test only links hle_swkbd.c
 // The frame counter advances on every call (as a present does on the device), and case 8 rewinds it to exercise the same-frame duplicate guard
 static uint64_t g_test_frame;
@@ -102,6 +105,41 @@ int main(void) {
     r = swkbd_show(&str, arg, stub);
     CHECK(r == 0x29F, "duplicate Result %#x expected 0x29F", r);
     CHECK(g_called == 0, "duplicate opened the input box %d times", g_called);
+
+    // 9–12: the developer console's answer hooks (hle_console.c; stub_mod.c fakes a loaded main module so the mode flag really lives and reads).
+    // The xp command is handled host-side (the walk itself is disabled with DM_TEST_NO_XP_WALK: the fake module holds no engine code)
+    setenv("DM_TEST_NO_XP_WALK", "1", 1);
+
+    printf("9 'xp 50' is handled host-side: a silent Lua comment, whatever the mode was\n");
+    dm_console_lua_mode(0);
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "xp 50\n";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"-- xp +50: profile not readable (see log.txt)\n", 46), "the xp command was not answered host-side");
+    CHECK(dm_console_lua_on(), "the xp command did not force Lua mode for its comment");
+
+    printf("10 Lua mode on: other command-argument lines are rewritten for the runner, the terminator kept\n");
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "money 100\n";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"money(100)\n", 12), "rewrite differs");
+
+    printf("11 Lua mode on: Lua text passes untouched\n");
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "for k,v in pairs(GAME) do print(k) end";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"for k,v in pairs(GAME) do print(k) end", 38), "Lua text was mangled");
+
+    printf("12 'xp' shapes only: 'xp' alone and 'xp x' pass through, 'xpx 5' is the Lua rewrite\n");
+    dm_console_lua_mode(1);
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "xp";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"xp", 3), "'xp' alone was taken as the command");
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "xp x";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"xp x", 5), "'xp x' should pass through (only integer arguments are rewritten)");
+    mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "xpx 5";
+    swkbd_show(&str, arg, stub);
+    CHECK(bytes_eq((const uint8_t *)"xpx(5)", 7), "'xpx 5' was taken as the command");
+    dm_console_lua_mode(0);
+    unsetenv("DM_TEST_NO_XP_WALK");
 
     printf("%s: %d/%d\n", fails ? "FAILED" : "all passed", checks - fails, checks);
     return fails != 0;
