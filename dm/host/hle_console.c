@@ -139,7 +139,6 @@ static uint8_t *con_profile(void) {
     void *(*getp)(void *) = (void *)pb;
     uint8_t *p = getp(name);
     char shown[64]; long nl = con_read_str(name, shown, sizeof shown); // the resolved profile name tells an empty result apart from an unselected profile
-    LOG("console: xp: profile %p, name '%s' (%ld)", p, nl >= 0 ? shown : "?", nl);
     return p;
 }
 
@@ -177,57 +176,7 @@ static int con_rd(const void *a, void *out, size_t n) {
 #endif
 }
 
-// Development dump (DM_XP_DUMP=1): the current run's inline data and the objects its pointers reach — shows where the pilots moved if a future build changes the layout
-static void con_profile_dump(uint8_t *prof) {
-    {   // the current run's data lives inline at profile+0x170 (the profile writer calls 0x626518 with that address); the pilots start at current+0x50
-        uint8_t raw[0x300];
-        if (con_rd(prof + 0x170, raw, sizeof raw)) {
-            LOG("console: xp: current data @%p (profile+0x170), pilots at +0x50 = %p", (void *)(prof + 0x170), (void *)(prof + 0x1c0));
-            for (size_t j = 0; j < sizeof raw; j += 16) {
-                char hex[3 * 16 + 1], asc[17]; int hp = 0, ap = 0;
-                for (size_t k = 0; k < 16; k++) { uint8_t b = raw[j + k]; hp += snprintf(hex + hp, sizeof hex - hp, "%02x ", b); asc[ap++] = (b >= 32 && b < 127) ? (char)b : '.'; }
-                asc[16] = 0;
-                LOG("console: xp:   +%#04zx  %s %s", 0x170 + j, hex, asc);
-            }
-        } else LOG("console: xp: current data at profile+0x170 is unreadable");
-    }
-    {   // the pilot-looking pointers inside current: dump the object each one points at
-        static const uint32_t poffs[] = { 0x198, 0x1a0, 0x1a8, 0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0, 0x1e8, 0x1f0 };
-        for (unsigned k = 0; k < sizeof poffs / sizeof poffs[0]; k++) {
-            uint8_t *c = NULL;
-            if (!con_rd(prof + poffs[k], &c, sizeof c) || !c || (uintptr_t)c < 0x1000) continue;
-            uint8_t raw[0x100];
-            if (!con_rd(c, raw, sizeof raw)) { LOG("console: xp: current+%#x -> %p (unreadable)", poffs[k], c); continue; }
-            LOG("console: xp: current+%#x -> %p", poffs[k], c);
-            for (size_t j = 0; j < sizeof raw; j += 16) {
-                char hex[3 * 16 + 1], asc[17]; int hp = 0, ap = 0;
-                for (size_t q = 0; q < 16; q++) { uint8_t b = raw[j + q]; hp += snprintf(hex + hp, sizeof hex - hp, "%02x ", b); asc[ap++] = (b >= 32 && b < 127) ? (char)b : '.'; }
-                asc[16] = 0;
-                LOG("console: xp:     +%#04zx  %s %s", j, hex, asc);
-            }
-        }
-    }
-    static const uint32_t offs[] = { 0x38, 0x40, 0x98, 0xb0, 0xb8, 0xd0, 0xd8, 0x150, 0x160, 0x168, 0x170, 0x178, 0x180, 0x188, 0x190, 0x1f8, 0x210, 0x228, 0x230, 0x240, 0x248, 0x250, 0x280, 0x288 };
-    for (unsigned k = 0; k < sizeof offs / sizeof offs[0]; k++) {
-        uint8_t *c = NULL;
-        if (!con_rd(prof + offs[k], &c, sizeof c) || !c) continue;
-        uint64_t w[3] = {0};
-        if (!con_rd(c, w, sizeof w)) { LOG("console: xp: profile+%#x = %p (unreadable)", offs[k], c); continue; }
-        LOG("console: xp: profile+%#x = %p [%#llx %#llx %#llx]", offs[k], c, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2]);
-        uint8_t *node = NULL;
-        if (!con_rd(c + 0x10, &node, sizeof node)) continue;
-        for (int i = 0; node && i < 4; i++) {
-            char key[48] = ""; long kl = con_read_str(node + 0x10, key, sizeof key);
-            uint32_t v = 0; con_rd(node + 0x38, &v, sizeof v);
-            uint8_t *next = NULL; con_rd(node, &next, sizeof next);
-            LOG("console: xp:   +%#x node %d: '%s' (key %ld) int@+0x38=%u", offs[k], i, kl >= 0 ? key : "?", kl, v);
-            node = next;
-        }
-    }
-}
-
-// The run's Pilot object i: the current run's data is inline at profile+0x170, and its +0x50 is an array of three pointers to the Pilot objects, 0x10 apart
-//   (the current writer at main+0x626610 reads exactly [current+0x50] -> [0], [0x10], [0x20] to serialize pilot0..2).
+// The run's Pilot pointers live at [current+0x50] (current = profile+0x170), three pointers 0x10 apart.
 static uint8_t *con_pilot_ptr(uint8_t *prof, int i) {
     uint8_t *arr = NULL, *p = NULL;
     if (!con_rd(prof + 0x170 + 0x50, &arr, sizeof arr) || !arr) return NULL;
@@ -241,16 +190,16 @@ static uint8_t *con_pilot_ptr(uint8_t *prof, int i) {
 int dm_console_pilots_apply(int n) {
     static int no_walk = -1;                                          // DM_TEST_NO_XP_WALK: the unit tests run no engine code (the fake module is data only)
     if (no_walk < 0) no_walk = getenv("DM_TEST_NO_XP_WALK") != NULL;
-    if (no_walk) { LOG("console: xp: walk disabled (DM_TEST_NO_XP_WALK)"); return -1; }
+    if (no_walk) return -1;
     uint8_t *prof = con_profile();
-    if (!prof) { LOG("console: xp: the profile is not up yet"); return -1; }
-    if (getenv("DM_XP_DUMP")) con_profile_dump(prof);                 // development: the profile/current pointers, if a future build moves them
+    if (!prof) return -1;
+    if (!con_pilot_ptr(prof, 0)) return -2;
     uint8_t *addxp = con_addr(0x5b596c, NULL);                        // Pilot::AddXP(this, int): the game's own xp/level-up path (main+0x5b596c)
-    if (n && !addxp) { LOG("console: xp: no Pilot::AddXP with this build ID"); return -1; }
+    if (n && !addxp) return -1;
     int cnt = 0, ok = 0;
     for (int i = 0; i < 3; i++) {
         uint8_t *p = con_pilot_ptr(prof, i);
-        if (!p) { LOG("console: xp: pilot %d has no record -- no write", i); return -1; }
+        if (!p) return -1;
         char id[64] = "", name[64] = "";
         int32_t exp = 0, level = 0, sk1 = 0, sk2 = 0; uint8_t *sk = NULL;
         long il = con_read_str(p + 0xa8, id, sizeof id);
@@ -259,10 +208,8 @@ int dm_console_pilots_apply(int n) {
             !con_rd(p + 0x100, &sk, sizeof sk) || !sk ||
             !con_rd(sk + 0x70, &sk1, sizeof sk1) || !con_rd(sk + 0xe8, &sk2, sizeof sk2) ||
             exp < 0 || exp > 1000000) {
-            LOG("console: xp: pilot %d failed validation (%s / %s, exp %d, level %d, skills %p) -- no write", i, id, name, exp, level, (void *)sk);
             return -1;
         }
-        LOG("console: xp: pilot %d '%s' (%s) exp %d level %d skill %d/%d%s", i, id, name, exp, level, sk1, sk2, n ? "" : " (report only)");
         if (n) {
             // Pilot::AddXP adds at most the current level's remaining XP and promotes once per call when the bar fills, so feed it one point at a
             //   time: that is how the game itself grants XP (the victory path loops it), and it carries the rest of a 50/100 command into the next level.
@@ -270,20 +217,15 @@ int dm_console_pilots_apply(int n) {
             if (steps > 10000) steps = 10000;
             int (*add_xp)(void *, int) = (void *)addxp;
             for (int k = 0; k < steps; k++) add_xp(p, dir);
-            int32_t exp2 = 0, level2 = 0;
-            if (con_rd(p + 0x48, &exp2, sizeof exp2) && con_rd(p + 0x8c, &level2, sizeof level2))
-                LOG("console: xp: pilot %d -> exp %d level %d", i, exp2, level2);
             ok++;
         }
         cnt++;
     }
-    LOG("console: xp: %d pilot(s)%s", cnt, n ? ", applied" : "");
     return n ? ok : cnt;
 }
 
 // The host's "xp <n>" command (the pilots are not reachable from the console's Lua mode): the run's three pilot records get n experience each, and the answer becomes
-//   a silent Lua comment, so nothing else executes; the details go to the log. DM_XP_REPORT=1 only reports (no write), for checking the layout. Returns 1 when the
-//   answer was replaced.
+//   a one-line Lua comment, so nothing else executes. DM_XP_REPORT=1 only reports (no write). Returns 1 when the answer was replaced.
 static int xp_hook(char *text, size_t cap) {
     const char *a = text, *e = text + strlen(text);
     if (e > a && e[-1] == '\n') e--;                                  // the terminator the macro appends (hle_touch.c)
@@ -298,8 +240,9 @@ static int xp_hook(char *text, size_t cap) {
     int report = r && *r && *r != '0';
     int applied = dm_console_pilots_apply(report ? 0 : (int)n);
     dm_console_lua_mode(1);                                           // the comment below evaluates harmlessly only in Lua mode
-    if (applied < 0) snprintf(text, cap, "-- xp %+ld: profile not readable (see log.txt)\n", n);
-    else snprintf(text, cap, "-- xp %+ld: %d pilot(s) %s (see log.txt)\n", n, applied, report ? "reported" : "updated");
+    if (applied == -2) snprintf(text, cap, "-- xp %+ld: no run loaded (press Continue first)\n", n);
+    else if (applied < 0) snprintf(text, cap, "-- xp %+ld: failed\n", n);
+    else snprintf(text, cap, "-- xp %+ld: %d pilot(s) %s\n", n, applied, report ? "reported" : "updated");
     return 1;
 }
 
@@ -307,11 +250,7 @@ static int xp_hook(char *text, size_t cap) {
 // "skill" lists the current run's pilots and their two chosen skills ("skill"), or sets them: "skill <pilot> <skill1> [skill2]". <pilot> is 1..3, "all", a
 //   pilot id (Pilot_Rust) or a case-insensitive name fragment (Rust, Philip); a skill is 0..3 or health/move/grid/reactor (the four level-up skills), and "-"
 //   keeps the current one. The pilot's two skill ints live in the object at [pilot+0x100], at +0x70 and +0xe8 (the Pilot writer, main+0x5b7378, reads them there).
-//   Writing them is a save edit: the hangar and the next save read the same fields. Details go to the log; the console answer is a silent Lua comment.
-static const char *skill_name(int v) {
-    static const char *const names[] = { "health", "move", "grid", "reactor" };
-    return v >= 0 && v < 4 ? names[v] : "?";
-}
+//   Writing them is a save edit: the hangar and the next save read the same fields. The console answer is a one-line Lua comment.
 static int skill_value(const char *s) {
     if (!strcasecmp(s, "-") || !strcasecmp(s, "keep")) return -1;
     if (s[0] >= '0' && s[0] <= '3' && !s[1]) return s[0] - '0';
@@ -327,12 +266,29 @@ static int con_skill_get(uint8_t *p, int which, int *out) {
     *out = (int)v;
     return 0;
 }
+// A skill slot is a full 0x78-byte PilotSkill descriptor, not just the id int at +0x70: copy the whole descriptor from the game's table.
+static uint8_t *con_skill_table(void) {
+    static uint8_t *table;
+    if (table) return table;
+    uint8_t *newfn = con_addr(0x6e1e70, NULL), *buildfn = con_addr(0x5b50d0, NULL);
+    if (!newfn || !buildfn) return NULL;
+    void *(*gnew)(size_t) = (void *)newfn;
+    uint8_t *vec = gnew(24);
+    if (!vec) return NULL;
+    ((void (*)(void *))buildfn)(vec);
+    uint8_t *base = NULL;
+    if (!con_rd(vec, &base, sizeof base) || !base) return NULL;
+    table = base;
+    return table;
+}
 static int con_skill_set(uint8_t *p, int which, int v) {
     uint8_t *sk = NULL;
-    if (!con_rd(p + 0x100, &sk, sizeof sk) || !sk) return -1;
-    uint32_t *q = (uint32_t *)(sk + (which ? 0xe8 : 0x70));
-    dm_guest_write_prepare(q, sizeof *q);
-    __atomic_store_n(q, (uint32_t)v, __ATOMIC_RELAXED);
+    if (!con_rd(p + 0x100, &sk, sizeof sk) || !sk || v < 0 || v > 13) return -1;
+    uint8_t *table = con_skill_table();
+    if (!table) return -1;
+    uint8_t *dst = sk + (size_t)which * 0x78, *src = table + (size_t)v * 0x78;
+    dm_guest_write_prepare(dst, 0x78);
+    memcpy(dst, src, 0x78);
     return 0;
 }
 static int ci_contains(const char *h, const char *n) {
@@ -374,14 +330,15 @@ static int skill_hook(char *text, size_t cap) {
         arg[nt][n] = 0; nt++;
     }
     uint8_t *prof = con_profile();
-    if (!prof) { snprintf(text, cap, "-- skill: profile not readable (see log.txt)\n"); dm_console_lua_mode(1); return 1; }
+    if (!prof) { snprintf(text, cap, "-- skill: failed\n"); dm_console_lua_mode(1); return 1; }
+    if (!con_pilot_ptr(prof, 0)) { snprintf(text, cap, "-- skill: no run loaded (press Continue first)\n"); dm_console_lua_mode(1); return 1; }
     if (nt > 3 || (nt >= 2 && (skill_value(arg[1]) == -2 || (nt == 3 && skill_value(arg[2]) == -2)))) {
         snprintf(text, cap, "-- skill <pilot> <skill1> [skill2] (0..3 or health/move/grid/reactor, - = keep)\n");
         dm_console_lua_mode(1); return 1;
     }
     int idx = -1, count = nt ? pilot_find(prof, arg[0], &idx) : 3;
     if (count != 1 && count != 3) {
-        snprintf(text, cap, "-- skill: '%s' matches %d pilot(s); use 1..3 or all (see log.txt)\n", nt ? arg[0] : "", count);
+        snprintf(text, cap, "-- skill: '%s' matches %d pilot(s); use 1..3 or all\n", nt ? arg[0] : "", count);
         dm_console_lua_mode(1); return 1;
     }
     int targets[3], ntargets = count == 3 ? 3 : 1;
@@ -394,21 +351,17 @@ static int skill_hook(char *text, size_t cap) {
         char id[64] = "", name[64] = "";
         int c1 = -1, c2 = -1;
         if (!p || con_read_str(p + 0xa8, id, sizeof id) <= 0 || con_skill_get(p, 0, &c1) || con_skill_get(p, 1, &c2)) {
-            LOG("console: skill: pilot %d is unreadable -- no write", targets[i]);
-            snprintf(text, cap, "-- skill: pilot %d unreadable (see log.txt)\n", targets[i]);
+            snprintf(text, cap, "-- skill: pilot %d unreadable\n", targets[i]);
             dm_console_lua_mode(1); return 1;
         }
         con_read_str(p + 0x28, name, sizeof name);
         int n1 = v1 < 0 ? c1 : v1, n2 = v2 < 0 ? c2 : v2;
-        if (v1 >= 0 && con_skill_set(p, 0, n1)) { snprintf(text, cap, "-- skill: pilot %d unreadable (see log.txt)\n", targets[i]); dm_console_lua_mode(1); return 1; }
-        if (v2 >= 0 && con_skill_set(p, 1, n2)) { snprintf(text, cap, "-- skill: pilot %d unreadable (see log.txt)\n", targets[i]); dm_console_lua_mode(1); return 1; }
-        LOG("console: skill: pilot %d '%s' (%s) skill1 %d(%s) -> %d(%s), skill2 %d(%s) -> %d(%s)%s",
-            targets[i], id, name, c1, skill_name(c1), n1, skill_name(n1), c2, skill_name(c2), n2, skill_name(n2),
-            (v1 >= 0 || v2 >= 0) ? "" : " (report only)");
+        if (v1 >= 0 && con_skill_set(p, 0, n1)) { snprintf(text, cap, "-- skill: pilot %d unreadable\n", targets[i]); dm_console_lua_mode(1); return 1; }
+        if (v2 >= 0 && con_skill_set(p, 1, n2)) { snprintf(text, cap, "-- skill: pilot %d unreadable\n", targets[i]); dm_console_lua_mode(1); return 1; }
         changed += (v1 >= 0 || v2 >= 0);
     }
-    if (nt == 0 || (nt == 1 && count == 1)) snprintf(text, cap, "-- skill: %d pilot(s) listed (see log.txt)\n", ntargets);
-    else snprintf(text, cap, "-- skill: %d pilot(s) %s (see log.txt)\n", ntargets, changed ? "updated" : "listed");
+    if (nt == 0 || (nt == 1 && count == 1)) snprintf(text, cap, "-- skill: %d pilot(s) listed\n", ntargets);
+    else snprintf(text, cap, "-- skill: %d pilot(s) %s\n", ntargets, changed ? "updated" : "listed");
     dm_console_lua_mode(1);
     return 1;
 }

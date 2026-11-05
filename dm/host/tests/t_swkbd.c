@@ -114,7 +114,7 @@ int main(void) {
     dm_console_lua_mode(0);
     mkarg(1, 100, hero, 4); g_ret = 1; g_reply = "xp 50\n";
     swkbd_show(&str, arg, stub);
-    CHECK(bytes_eq((const uint8_t *)"-- xp +50: profile not readable (see log.txt)\n", 46), "the xp command was not answered host-side");
+    CHECK(bytes_eq((const uint8_t *)"-- xp +50: failed\n", 18), "the xp command was not answered host-side");
     CHECK(dm_console_lua_on(), "the xp command did not force Lua mode for its comment");
 
     printf("10 Lua mode on: other command-argument lines are rewritten for the runner, the terminator kept\n");
